@@ -10,15 +10,17 @@
 - ✅ **灵活配置**：通过 YAML 配置文件管理过滤规则
 - ✅ **模块化设计**：监控、过滤、处理三个模块独立，职责清晰
 - ✅ **多种处理方式**：支持控制台输出和 HTTP 接口上报
+- ✅ **指标统计**：每分钟自动统计匹配日志数量（参考 falcon-log-agent）
 - ✅ **优雅退出**：支持 Ctrl+C 优雅退出
 
 ## 架构设计
 
-项目采用模块化架构，分为三个独立模块：
+项目采用模块化架构，分为四个独立模块：
 
 1. **监控模块（monitor）**：负责读取日志文件，通过 channel 发送日志行
 2. **过滤模块（filter）**：负责根据规则匹配日志，通过 channel 发送匹配结果
 3. **处理模块（handler）**：负责处理匹配到的日志，支持控制台输出和 HTTP 上报
+4. **指标模块（metrics）**：负责统计匹配日志数量，定期输出统计信息（参考 falcon-log-agent）
 
 ## 安装
 
@@ -92,6 +94,11 @@ rules:
 handler:
   type: console
 
+# 指标统计配置
+metrics:
+  enabled: true
+  interval: 1m
+
 # 过滤规则
 rules:
   - name: "错误日志"
@@ -111,6 +118,11 @@ handler:
   type: http
   api_url: http://your-api-endpoint.com/logs
   timeout: 30s
+
+# 指标统计配置
+metrics:
+  enabled: true
+  interval: 1m
 
 # 过滤规则
 rules:
@@ -149,6 +161,20 @@ rules:
   -> 匹配包含错误、致命错误或严重错误的日志
 ```
 
+### 指标统计输出
+
+系统会按照配置的间隔（默认每分钟）自动输出统计信息：
+
+```
+========== 指标统计 [2024-01-15 10:31:00] ==========
+统计时长: 60 秒
+总匹配数: 15
+各规则匹配数:
+  - 错误日志: 10
+  - 警告日志: 5
+==========================================
+```
+
 ### HTTP 上报格式
 
 当使用 HTTP 处理器时，匹配的日志会以 JSON 格式上报到指定接口：
@@ -177,8 +203,10 @@ log-filter-monitor/
     │   └── monitor.go
     ├── filter/            # 日志过滤模块（负责规则匹配）
     │   └── filter.go
-    └── handler/           # 日志处理模块（负责输出和上报）
-        └── handler.go
+    ├── handler/           # 日志处理模块（负责输出和上报）
+    │   └── handler.go
+    └── metrics/           # 指标统计模块（负责统计和上报）
+        └── metrics.go
 ```
 
 ## 开发
@@ -229,6 +257,23 @@ httpHandler := handler.NewHTTPHandler(apiURL, timeout)
 
 // 组合使用
 multiHandler := handler.NewMultiHandler(consoleHandler, httpHandler)
+```
+
+#### 指标模块（metrics）
+
+负责统计和上报指标：
+
+- 按规则统计匹配数量
+- 定期输出统计信息
+- 支持自定义统计间隔
+
+```go
+// 创建指标收集器
+metricsCollector := metrics.NewMetricsCollector(1 * time.Minute)
+metricsCollector.Start(metrics.LogOutputFunc)
+
+// 统计匹配结果
+metricsCollector.IncrementByMatchResult(matchResult)
 ```
 
 ### 配置 HTTP 上报

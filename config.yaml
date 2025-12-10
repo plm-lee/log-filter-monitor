@@ -13,6 +13,13 @@ handler:
   # HTTP请求超时时间（可选，默认：10s，单位：s、m、h）
   # timeout: 10s
 
+# 指标统计配置
+metrics:
+  # 是否启用指标统计（默认：true）
+  enabled: true
+  # 统计间隔（可选，默认：1m，单位：s、m、h）
+  # interval: 1m
+
 rules:
   # 错误日志规则
   - name: "错误日志"

@@ -33,11 +33,19 @@ type HandlerConfig struct {
 	Timeout string `yaml:"timeout"` // HTTP请求超时时间（可选，默认：10s）
 }
 
+// MetricsConfig 指标统计配置结构体
+// 定义指标统计的配置信息
+type MetricsConfig struct {
+	Enabled  bool   `yaml:"enabled"`  // 是否启用指标统计（默认：true）
+	Interval string `yaml:"interval"` // 统计间隔（可选，默认：1m，单位：s、m、h）
+}
+
 // Config 配置文件结构体
 // 包含所有配置信息
 type Config struct {
 	Rules   []Rule        `yaml:"rules"`   // 规则列表
 	Handler HandlerConfig `yaml:"handler"` // 处理器配置
+	Metrics MetricsConfig `yaml:"metrics"` // 指标统计配置
 }
 
 // LogFilter 日志过滤器结构体
@@ -101,13 +109,45 @@ func (lf *LogFilter) Match(logLine string) []MatchResult {
 	return results
 }
 
-// Filter 过滤日志通道，将匹配的日志发送到结果通道
+// FilterManager 过滤器管理器
+// 负责管理日志过滤器的运行
+type FilterManager struct {
+	filter *LogFilter
+	wg     sync.WaitGroup
+}
+
+// NewFilterManager 创建过滤器管理器
+// filter: 日志过滤器
+// 返回: FilterManager实例
+func NewFilterManager(filter *LogFilter) *FilterManager {
+	return &FilterManager{
+		filter: filter,
+	}
+}
+
+// Start 启动过滤器
 // logChan: 输入日志通道
 // resultChan: 输出匹配结果通道
 // stopChan: 停止信号通道
-func (lf *LogFilter) Filter(logChan <-chan string, resultChan chan<- MatchResult, stopChan <-chan struct{}) {
-	defer close(resultChan)
+func (fm *FilterManager) Start(logChan <-chan string, resultChan chan<- MatchResult, stopChan <-chan struct{}) {
+	fm.wg.Add(1)
+	go func() {
+		defer fm.wg.Done()
+		defer close(resultChan)
+		fm.filter.filter(logChan, resultChan, stopChan)
+	}()
+}
 
+// Wait 等待过滤器完成
+func (fm *FilterManager) Wait() {
+	fm.wg.Wait()
+}
+
+// filter 过滤日志通道，将匹配的日志发送到结果通道（内部方法）
+// logChan: 输入日志通道
+// resultChan: 输出匹配结果通道
+// stopChan: 停止信号通道
+func (lf *LogFilter) filter(logChan <-chan string, resultChan chan<- MatchResult, stopChan <-chan struct{}) {
 	for {
 		select {
 		case <-stopChan:
@@ -129,6 +169,15 @@ func (lf *LogFilter) Filter(logChan <-chan string, resultChan chan<- MatchResult
 			}
 		}
 	}
+}
+
+// Filter 过滤日志通道，将匹配的日志发送到结果通道（保留向后兼容）
+// logChan: 输入日志通道
+// resultChan: 输出匹配结果通道
+// stopChan: 停止信号通道
+func (lf *LogFilter) Filter(logChan <-chan string, resultChan chan<- MatchResult, stopChan <-chan struct{}) {
+	defer close(resultChan)
+	lf.filter(logChan, resultChan, stopChan)
 }
 
 // UpdateRules 更新过滤规则
@@ -226,7 +275,13 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("不支持的处理器类型 '%s'，支持的类型：console, http", config.Handler.Type)
 	}
 
-	log.Printf("成功加载配置 - 规则数: %d, 处理器类型: %s\n", len(config.Rules), config.Handler.Type)
+	// 如果没有配置 metrics，默认启用
+	if config.Metrics.Interval == "" {
+		config.Metrics.Interval = "1m"
+	}
+
+	log.Printf("成功加载配置 - 规则数: %d, 处理器类型: %s, 指标统计: %v\n",
+		len(config.Rules), config.Handler.Type, config.Metrics.Enabled)
 	return &config, nil
 }
 

@@ -212,11 +212,46 @@ func (h *MultiHandler) Handle(matchResult filter.MatchResult) error {
 	return lastErr
 }
 
-// Process 处理匹配结果通道
+// MetricsCollector 指标收集器接口
+// 用于统计匹配结果
+type MetricsCollector interface {
+	IncrementByMatchResult(matchResult filter.MatchResult)
+}
+
+// HandlerManager 处理器管理器
+// 负责管理日志处理器的创建和运行
+type HandlerManager struct {
+	handler LogHandler
+	metrics MetricsCollector
+	wg      sync.WaitGroup
+}
+
+// NewHandlerManager 创建处理器管理器
+// handler: 日志处理器
+// metrics: 指标收集器（可选）
+// 返回: HandlerManager实例
+func NewHandlerManager(handler LogHandler, metrics MetricsCollector) *HandlerManager {
+	return &HandlerManager{
+		handler: handler,
+		metrics: metrics,
+	}
+}
+
+// Start 启动处理器
 // resultChan: 匹配结果通道
 // stopChan: 停止信号通道
-// handler: 日志处理器
-func Process(resultChan <-chan filter.MatchResult, stopChan <-chan struct{}, handler LogHandler) {
+func (hm *HandlerManager) Start(resultChan <-chan filter.MatchResult, stopChan <-chan struct{}) {
+	hm.wg.Add(1)
+	go func() {
+		defer hm.wg.Done()
+		hm.process(resultChan, stopChan)
+	}()
+}
+
+// process 处理匹配结果通道
+// resultChan: 匹配结果通道
+// stopChan: 停止信号通道
+func (hm *HandlerManager) process(resultChan <-chan filter.MatchResult, stopChan <-chan struct{}) {
 	for {
 		select {
 		case <-stopChan:
@@ -227,10 +262,68 @@ func Process(resultChan <-chan filter.MatchResult, stopChan <-chan struct{}, han
 				return
 			}
 
+			// 统计指标
+			if hm.metrics != nil {
+				hm.metrics.IncrementByMatchResult(result)
+			}
+
 			// 处理匹配结果
-			if err := handler.Handle(result); err != nil {
+			if err := hm.handler.Handle(result); err != nil {
 				log.Printf("处理匹配结果时出错: %v\n", err)
 			}
 		}
 	}
+}
+
+// Wait 等待处理器完成
+func (hm *HandlerManager) Wait() {
+	hm.wg.Wait()
+}
+
+// GetHandler 获取处理器实例
+// 返回: 日志处理器
+func (hm *HandlerManager) GetHandler() LogHandler {
+	return hm.handler
+}
+
+// CreateHandler 根据配置创建处理器
+// handlerConfig: 处理器配置
+// 返回: 日志处理器和错误信息
+func CreateHandler(handlerConfig filter.HandlerConfig) (LogHandler, error) {
+	var timeout time.Duration = 10 * time.Second
+
+	// 解析超时时间
+	if handlerConfig.Timeout != "" {
+		parsedTimeout, err := time.ParseDuration(handlerConfig.Timeout)
+		if err != nil {
+			log.Printf("警告：无法解析超时时间 '%s'，使用默认值 10s: %v\n", handlerConfig.Timeout, err)
+		} else {
+			timeout = parsedTimeout
+		}
+	}
+
+	switch handlerConfig.Type {
+	case "console":
+		log.Println("使用控制台输出处理器")
+		return NewConsoleHandler(), nil
+	case "http":
+		if handlerConfig.APIURL == "" {
+			return nil, fmt.Errorf("使用HTTP处理器时必须在配置文件中配置 api_url")
+		}
+		log.Printf("使用HTTP上报处理器，API地址: %s，超时时间: %v\n", handlerConfig.APIURL, timeout)
+		return NewHTTPHandler(handlerConfig.APIURL, timeout), nil
+	default:
+		return nil, fmt.Errorf("不支持的处理器类型 '%s'，支持的类型：console, http", handlerConfig.Type)
+	}
+}
+
+// Process 处理匹配结果通道（保留向后兼容）
+// resultChan: 匹配结果通道
+// stopChan: 停止信号通道
+// handler: 日志处理器
+// metrics: 指标收集器（可选，如果为 nil 则不统计）
+func Process(resultChan <-chan filter.MatchResult, stopChan <-chan struct{}, handler LogHandler, metrics MetricsCollector) {
+	manager := NewHandlerManager(handler, metrics)
+	manager.Start(resultChan, stopChan)
+	manager.Wait()
 }

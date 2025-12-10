@@ -6,12 +6,11 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
-	"time"
 
 	"log-filter-monitor/internal/filter"
 	"log-filter-monitor/internal/handler"
+	"log-filter-monitor/internal/metrics"
 	"log-filter-monitor/internal/monitor"
 )
 
@@ -28,10 +27,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 加载完整配置（包括规则和处理器配置）
+	// 加载完整配置
 	cfg, err := filter.LoadConfig(*configFile)
 	if err != nil {
 		log.Fatalf("加载配置文件失败: %v", err)
+	}
+
+	// 创建日志监控器
+	logMonitor := monitor.NewLogMonitor(*logFile)
+	if err := logMonitor.Start(); err != nil {
+		log.Fatalf("启动日志监控失败: %v", err)
 	}
 
 	// 创建日志过滤器
@@ -39,79 +44,75 @@ func main() {
 	if err != nil {
 		log.Fatalf("创建日志过滤器失败: %v", err)
 	}
-
-	// 解析超时时间（如果配置了）
-	timeout := 10 * time.Second // 默认超时时间
-	if cfg.Handler.Timeout != "" {
-		parsedTimeout, err := time.ParseDuration(cfg.Handler.Timeout)
-		if err != nil {
-			log.Printf("警告：无法解析超时时间 '%s'，使用默认值 10s: %v\n", cfg.Handler.Timeout, err)
-		} else {
-			timeout = parsedTimeout
-		}
-	}
+	filterManager := filter.NewFilterManager(logFilter)
 
 	// 创建日志处理器
-	var logHandler handler.LogHandler
-	switch cfg.Handler.Type {
-	case "console":
-		logHandler = handler.NewConsoleHandler()
-		log.Println("使用控制台输出处理器")
-	case "http":
-		if cfg.Handler.APIURL == "" {
-			log.Fatalf("错误：使用HTTP处理器时必须在配置文件中配置 api_url")
-		}
-		logHandler = handler.NewHTTPHandler(cfg.Handler.APIURL, timeout)
-		log.Printf("使用HTTP上报处理器，API地址: %s，超时时间: %v\n", cfg.Handler.APIURL, timeout)
-	default:
-		log.Fatalf("错误：不支持的处理器类型 '%s'，支持的类型：console, http", cfg.Handler.Type)
+	logHandler, err := handler.CreateHandler(cfg.Handler)
+	if err != nil {
+		log.Fatalf("创建日志处理器失败: %v", err)
 	}
 
-	// 创建日志监控器
-	logMonitor := monitor.NewLogMonitor(*logFile)
+	// 创建指标管理器
+	metricsManager, err := metrics.CreateMetricsManager(cfg.Metrics)
+	if err != nil {
+		log.Fatalf("创建指标管理器失败: %v", err)
+	}
 
 	// 创建通道
 	stopChan := make(chan struct{})
-	resultChan := make(chan filter.MatchResult, 100) // 带缓冲的通道
+	resultChan := make(chan filter.MatchResult, 100)
+
+	// 启动指标统计
+	if metricsManager != nil {
+		metricsManager.Start(metrics.LogOutputFunc)
+	}
+
+	// 启动日志过滤
+	filterManager.Start(logMonitor.LogChan, resultChan, stopChan)
+
+	// 启动日志处理
+	var metricsCollector handler.MetricsCollector
+	if metricsManager != nil && metricsManager.GetCollector() != nil {
+		metricsCollector = metricsManager.GetCollector()
+	}
+	handlerManager := handler.NewHandlerManager(logHandler, metricsCollector)
+	handlerManager.Start(resultChan, stopChan)
+
+	log.Println("日志过滤监控系统已启动")
 
 	// 设置信号处理，优雅退出
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	// 启动日志监控
-	if err := logMonitor.Start(); err != nil {
-		log.Fatalf("启动日志监控失败: %v", err)
-	}
-
-	// 启动日志过滤goroutine
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logFilter.Filter(logMonitor.LogChan, resultChan, stopChan)
-	}()
-
-	// 启动日志处理goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		handler.Process(resultChan, stopChan, logHandler)
-	}()
-
-	log.Println("日志过滤监控系统已启动")
-
-	// 等待退出信号
 	<-sigChan
+
 	log.Println("\n正在停止日志过滤监控系统...")
 
 	// 关闭停止信号通道，通知所有goroutine退出
 	close(stopChan)
 
-	// 停止日志监控
+	// 停止各个模块
 	logMonitor.Stop()
+	filterManager.Wait()
+	handlerManager.Wait()
+	if metricsManager != nil {
+		metricsManager.Stop()
+	}
 
-	// 等待所有goroutine退出
-	wg.Wait()
+	// 输出最终统计信息
+	if metricsManager != nil {
+		finalMetrics := metricsManager.GetFinalMetrics()
+		if finalMetrics.TotalCount > 0 {
+			log.Println("\n========== 最终统计信息 ==========")
+			log.Printf("总匹配数: %d\n", finalMetrics.TotalCount)
+			if len(finalMetrics.RuleCounts) > 0 {
+				log.Println("各规则匹配数:")
+				for ruleName, count := range finalMetrics.RuleCounts {
+					log.Printf("  - %s: %d\n", ruleName, count)
+				}
+			}
+			log.Println("==================================")
+		}
+	}
 
 	// 如果使用了HTTP处理器，输出统计信息
 	if httpHandler, ok := logHandler.(*handler.HTTPHandler); ok {
