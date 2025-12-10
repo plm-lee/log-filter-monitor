@@ -25,10 +25,19 @@ type MatchResult struct {
 	LogLine string // 匹配的日志行内容
 }
 
+// HandlerConfig 处理器配置结构体
+// 定义日志处理器的配置信息
+type HandlerConfig struct {
+	Type    string `yaml:"type"`    // 处理器类型：console 或 http
+	APIURL  string `yaml:"api_url"` // HTTP上报接口地址（当type为http时必需）
+	Timeout string `yaml:"timeout"` // HTTP请求超时时间（可选，默认：10s）
+}
+
 // Config 配置文件结构体
-// 包含所有过滤规则的配置
+// 包含所有配置信息
 type Config struct {
-	Rules []Rule `yaml:"rules"` // 规则列表
+	Rules   []Rule        `yaml:"rules"`   // 规则列表
+	Handler HandlerConfig `yaml:"handler"` // 处理器配置
 }
 
 // LogFilter 日志过滤器结构体
@@ -167,10 +176,10 @@ func (lf *LogFilter) GetRules() []Rule {
 	return rules
 }
 
-// LoadRules 从YAML配置文件加载过滤规则
+// LoadConfig 从YAML配置文件加载完整配置
 // configPath: 配置文件路径
-// 返回: 规则列表和错误信息
-func LoadRules(configPath string) ([]Rule, error) {
+// 返回: 配置信息和错误信息
+func LoadConfig(configPath string) (*Config, error) {
 	// 读取配置文件内容
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -198,6 +207,37 @@ func LoadRules(configPath string) ([]Rule, error) {
 		}
 	}
 
-	log.Printf("成功加载 %d 条过滤规则\n", len(config.Rules))
+	// 验证处理器配置
+	if config.Handler.Type == "" {
+		// 如果没有配置，默认为 console
+		config.Handler.Type = "console"
+		log.Println("未配置处理器类型，使用默认值：console")
+	}
+
+	// 如果使用 HTTP 处理器，验证 API 地址
+	if config.Handler.Type == "http" {
+		if config.Handler.APIURL == "" {
+			return nil, fmt.Errorf("使用HTTP处理器时必须配置 api_url")
+		}
+	}
+
+	// 验证处理器类型
+	if config.Handler.Type != "console" && config.Handler.Type != "http" {
+		return nil, fmt.Errorf("不支持的处理器类型 '%s'，支持的类型：console, http", config.Handler.Type)
+	}
+
+	log.Printf("成功加载配置 - 规则数: %d, 处理器类型: %s\n", len(config.Rules), config.Handler.Type)
+	return &config, nil
+}
+
+// LoadRules 从YAML配置文件加载过滤规则（兼容旧版本）
+// configPath: 配置文件路径
+// 返回: 规则列表和错误信息
+// 注意：此函数已废弃，建议使用 LoadConfig
+func LoadRules(configPath string) ([]Rule, error) {
+	config, err := LoadConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
 	return config.Rules, nil
 }

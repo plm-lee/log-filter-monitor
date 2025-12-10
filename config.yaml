@@ -4,6 +4,15 @@
 #   - pattern: 正则表达式模式（必需）
 #   - description: 规则描述（可选）
 
+# 处理器配置
+handler:
+  # 处理器类型：console（控制台输出）或 http（HTTP上报）
+  type: console
+  # HTTP上报接口地址（当type为http时必需）
+  # api_url: http://your-api-endpoint.com/logs
+  # HTTP请求超时时间（可选，默认：10s，单位：s、m、h）
+  # timeout: 10s
+
 rules:
   # 错误日志规则
   - name: "错误日志"

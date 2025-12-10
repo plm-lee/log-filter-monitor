@@ -19,9 +19,6 @@ func main() {
 	// 解析命令行参数
 	logFile := flag.String("file", "", "要监控的日志文件路径（必需）")
 	configFile := flag.String("config", "config.yaml", "配置文件路径（可选，默认：config.yaml）")
-	handlerType := flag.String("handler", "console", "处理器类型：console（控制台输出）或 http（HTTP上报）")
-	apiURL := flag.String("api", "", "HTTP上报接口地址（当handler为http时必需）")
-	timeout := flag.Duration("timeout", 10*time.Second, "HTTP请求超时时间（默认：10s）")
 	flag.Parse()
 
 	if *logFile == "" {
@@ -31,40 +28,43 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 加载过滤规则配置
-	rules, err := filter.LoadRules(*configFile)
+	// 加载完整配置（包括规则和处理器配置）
+	cfg, err := filter.LoadConfig(*configFile)
 	if err != nil {
-		log.Printf("警告：无法加载配置文件 %s，将使用默认规则: %v\n", *configFile, err)
-		// 使用默认规则
-		rules = []filter.Rule{
-			{
-				Name:        "错误日志",
-				Pattern:     "ERROR|FATAL|CRITICAL",
-				Description: "匹配包含ERROR、FATAL或CRITICAL的日志",
-			},
-		}
+		log.Fatalf("加载配置文件失败: %v", err)
 	}
 
 	// 创建日志过滤器
-	logFilter, err := filter.NewLogFilter(rules)
+	logFilter, err := filter.NewLogFilter(cfg.Rules)
 	if err != nil {
 		log.Fatalf("创建日志过滤器失败: %v", err)
 	}
 
+	// 解析超时时间（如果配置了）
+	timeout := 10 * time.Second // 默认超时时间
+	if cfg.Handler.Timeout != "" {
+		parsedTimeout, err := time.ParseDuration(cfg.Handler.Timeout)
+		if err != nil {
+			log.Printf("警告：无法解析超时时间 '%s'，使用默认值 10s: %v\n", cfg.Handler.Timeout, err)
+		} else {
+			timeout = parsedTimeout
+		}
+	}
+
 	// 创建日志处理器
 	var logHandler handler.LogHandler
-	switch *handlerType {
+	switch cfg.Handler.Type {
 	case "console":
 		logHandler = handler.NewConsoleHandler()
 		log.Println("使用控制台输出处理器")
 	case "http":
-		if *apiURL == "" {
-			log.Fatalf("错误：使用HTTP处理器时必须指定API地址（-api参数）")
+		if cfg.Handler.APIURL == "" {
+			log.Fatalf("错误：使用HTTP处理器时必须在配置文件中配置 api_url")
 		}
-		logHandler = handler.NewHTTPHandler(*apiURL, *timeout)
-		log.Printf("使用HTTP上报处理器，API地址: %s，超时时间: %v\n", *apiURL, *timeout)
+		logHandler = handler.NewHTTPHandler(cfg.Handler.APIURL, timeout)
+		log.Printf("使用HTTP上报处理器，API地址: %s，超时时间: %v\n", cfg.Handler.APIURL, timeout)
 	default:
-		log.Fatalf("错误：不支持的处理器类型 '%s'，支持的类型：console, http", *handlerType)
+		log.Fatalf("错误：不支持的处理器类型 '%s'，支持的类型：console, http", cfg.Handler.Type)
 	}
 
 	// 创建日志监控器

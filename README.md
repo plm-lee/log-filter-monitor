@@ -34,7 +34,7 @@ go mod download
 
 ## 使用方法
 
-### 基本用法（控制台输出）
+### 基本用法
 
 ```bash
 go run main.go -file /path/to/your/logfile.log
@@ -46,46 +46,37 @@ go run main.go -file /path/to/your/logfile.log
 go run main.go -file /path/to/your/logfile.log -config custom-config.yaml
 ```
 
-### 使用 HTTP 接口上报
-
-```bash
-go run main.go -file /path/to/your/logfile.log -handler http -api http://your-api-endpoint.com/logs
-```
-
-### 自定义 HTTP 请求超时时间
-
-```bash
-go run main.go -file /path/to/your/logfile.log -handler http -api http://your-api-endpoint.com/logs -timeout 30s
-```
-
 ### 编译后使用
 
 ```bash
 # 编译
 go build -o log-filter-monitor
 
-# 运行（控制台输出）
+# 运行
 ./log-filter-monitor -file /path/to/your/logfile.log
-
-# 运行（HTTP上报）
-./log-filter-monitor -file /path/to/your/logfile.log -handler http -api http://your-api-endpoint.com/logs
 ```
 
 ### 命令行参数说明
 
 - `-file`：要监控的日志文件路径（必需）
 - `-config`：配置文件路径（可选，默认：config.yaml）
-- `-handler`：处理器类型（可选，默认：console）
-  - `console`：控制台输出
-  - `http`：HTTP 接口上报
-- `-api`：HTTP 上报接口地址（当 handler 为 http 时必需）
-- `-timeout`：HTTP 请求超时时间（可选，默认：10s）
+
+**注意**：处理器类型、API 地址和超时时间现在都在配置文件中配置，不再通过命令行参数指定。
 
 ## 配置文件说明
 
-配置文件使用 YAML 格式，默认文件名为 `config.yaml`。配置文件结构如下：
+配置文件使用 YAML 格式，默认文件名为 `config.yaml`。配置文件包含两部分：处理器配置和过滤规则配置。
+
+### 配置文件结构
 
 ```yaml
+# 处理器配置
+handler:
+  type: console # 处理器类型：console（控制台输出）或 http（HTTP上报）
+  api_url: "" # HTTP上报接口地址（当type为http时必需）
+  timeout: "10s" # HTTP请求超时时间（可选，默认：10s，支持单位：s、m、h）
+
+# 过滤规则配置
 rules:
   - name: "规则名称"
     pattern: "正则表达式模式"
@@ -94,7 +85,14 @@ rules:
 
 ### 配置示例
 
+#### 使用控制台输出（默认）
+
 ```yaml
+# 处理器配置
+handler:
+  type: console
+
+# 过滤规则
 rules:
   - name: "错误日志"
     pattern: "ERROR|FATAL|CRITICAL|Exception"
@@ -103,6 +101,22 @@ rules:
   - name: "警告日志"
     pattern: "WARN|WARNING"
     description: "匹配包含警告信息的日志"
+```
+
+#### 使用 HTTP 接口上报
+
+```yaml
+# 处理器配置
+handler:
+  type: http
+  api_url: http://your-api-endpoint.com/logs
+  timeout: 30s
+
+# 过滤规则
+rules:
+  - name: "错误日志"
+    pattern: "ERROR|FATAL|CRITICAL|Exception"
+    description: "匹配包含错误、致命错误、严重错误或异常的日志"
 
   - name: "特定IP访问"
     pattern: "192\\.168\\.1\\.(100|101|102)"
@@ -217,9 +231,20 @@ httpHandler := handler.NewHTTPHandler(apiURL, timeout)
 multiHandler := handler.NewMultiHandler(consoleHandler, httpHandler)
 ```
 
+### 配置 HTTP 上报
+
+编辑 `config.yaml` 文件，修改 handler 配置：
+
+```yaml
+handler:
+  type: http
+  api_url: http://your-api-endpoint.com/logs
+  timeout: 30s
+```
+
 ### 添加新的过滤规则
 
-编辑 `config.yaml` 文件，添加新的规则条目：
+编辑 `config.yaml` 文件，在 rules 部分添加新的规则条目：
 
 ```yaml
 rules:
