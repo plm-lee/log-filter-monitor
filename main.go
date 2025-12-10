@@ -6,9 +6,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"log-filter-monitor/internal/filter"
+	"log-filter-monitor/internal/handler"
 	"log-filter-monitor/internal/monitor"
 )
 
@@ -16,6 +19,9 @@ func main() {
 	// 解析命令行参数
 	logFile := flag.String("file", "", "要监控的日志文件路径（必需）")
 	configFile := flag.String("config", "config.yaml", "配置文件路径（可选，默认：config.yaml）")
+	handlerType := flag.String("handler", "console", "处理器类型：console（控制台输出）或 http（HTTP上报）")
+	apiURL := flag.String("api", "", "HTTP上报接口地址（当handler为http时必需）")
+	timeout := flag.Duration("timeout", 10*time.Second, "HTTP请求超时时间（默认：10s）")
 	flag.Parse()
 
 	if *logFile == "" {
@@ -39,23 +45,79 @@ func main() {
 		}
 	}
 
+	// 创建日志过滤器
+	logFilter, err := filter.NewLogFilter(rules)
+	if err != nil {
+		log.Fatalf("创建日志过滤器失败: %v", err)
+	}
+
+	// 创建日志处理器
+	var logHandler handler.LogHandler
+	switch *handlerType {
+	case "console":
+		logHandler = handler.NewConsoleHandler()
+		log.Println("使用控制台输出处理器")
+	case "http":
+		if *apiURL == "" {
+			log.Fatalf("错误：使用HTTP处理器时必须指定API地址（-api参数）")
+		}
+		logHandler = handler.NewHTTPHandler(*apiURL, *timeout)
+		log.Printf("使用HTTP上报处理器，API地址: %s，超时时间: %v\n", *apiURL, *timeout)
+	default:
+		log.Fatalf("错误：不支持的处理器类型 '%s'，支持的类型：console, http", *handlerType)
+	}
+
 	// 创建日志监控器
-	logMonitor := monitor.NewLogMonitor(*logFile, rules)
+	logMonitor := monitor.NewLogMonitor(*logFile)
+
+	// 创建通道
+	stopChan := make(chan struct{})
+	resultChan := make(chan filter.MatchResult, 100) // 带缓冲的通道
 
 	// 设置信号处理，优雅退出
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// 启动监控
+	// 启动日志监控
+	if err := logMonitor.Start(); err != nil {
+		log.Fatalf("启动日志监控失败: %v", err)
+	}
+
+	// 启动日志过滤goroutine
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		if err := logMonitor.Start(); err != nil {
-			log.Fatalf("启动日志监控失败: %v", err)
-		}
+		defer wg.Done()
+		logFilter.Filter(logMonitor.LogChan, resultChan, stopChan)
 	}()
+
+	// 启动日志处理goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		handler.Process(resultChan, stopChan, logHandler)
+	}()
+
+	log.Println("日志过滤监控系统已启动")
 
 	// 等待退出信号
 	<-sigChan
-	log.Println("\n正在停止日志监控...")
+	log.Println("\n正在停止日志过滤监控系统...")
+
+	// 关闭停止信号通道，通知所有goroutine退出
+	close(stopChan)
+
+	// 停止日志监控
 	logMonitor.Stop()
-	log.Println("日志监控已停止")
+
+	// 等待所有goroutine退出
+	wg.Wait()
+
+	// 如果使用了HTTP处理器，输出统计信息
+	if httpHandler, ok := logHandler.(*handler.HTTPHandler); ok {
+		success, failed := httpHandler.GetStats()
+		log.Printf("HTTP上报统计 - 成功: %d, 失败: %d\n", success, failed)
+	}
+
+	log.Println("日志过滤监控系统已停止")
 }
