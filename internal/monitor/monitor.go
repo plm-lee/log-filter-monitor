@@ -22,10 +22,13 @@ type LogMonitor struct {
 // filePath: 要监控的日志文件路径
 // 返回: LogMonitor实例
 func NewLogMonitor(filePath string) *LogMonitor {
+	// 增加通道缓冲大小，提高并发性能
+	const logChanSize = 500 // 日志通道缓冲大小（增加到500）
+
 	return &LogMonitor{
 		filePath: filePath,
 		stopChan: make(chan struct{}),
-		LogChan:  make(chan string, 100), // 带缓冲的通道，避免阻塞
+		LogChan:  make(chan string, logChanSize), // 带缓冲的通道，避免阻塞
 	}
 }
 

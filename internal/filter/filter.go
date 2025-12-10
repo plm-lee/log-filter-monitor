@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"sync"
+	"sync/atomic"
 
 	"gopkg.in/yaml.v2"
 )
@@ -72,12 +73,18 @@ type Config struct {
 	Metrics MetricsConfig `yaml:"metrics"` // 指标统计配置
 }
 
+// ruleSnapshot 规则快照结构
+// 用于无锁读取规则
+type ruleSnapshot struct {
+	rules    []Rule           // 过滤规则列表
+	matchers []*regexp.Regexp // 编译后的正则表达式匹配器
+}
+
 // LogFilter 日志过滤器结构体
 // 负责根据规则过滤日志行
 type LogFilter struct {
-	rules    []Rule           // 过滤规则列表
-	matchers []*regexp.Regexp // 编译后的正则表达式匹配器
-	mu       sync.RWMutex     // 保护规则的读写锁
+	snapshot atomic.Value // 规则快照，用于无锁读取
+	mu       sync.Mutex   // 保护规则更新的互斥锁
 }
 
 // NewLogFilter 创建新的日志过滤器实例
@@ -105,10 +112,14 @@ func NewLogFilter(rules []Rule) (*LogFilter, error) {
 
 	log.Printf("成功初始化过滤器，加载 %d 条有效规则\n", len(validRules))
 
-	return &LogFilter{
+	lf := &LogFilter{}
+	snapshot := &ruleSnapshot{
 		rules:    validRules,
 		matchers: matchers,
-	}, nil
+	}
+	lf.snapshot.Store(snapshot)
+
+	return lf, nil
 }
 
 // Match 检查日志行是否匹配任何规则
@@ -116,18 +127,19 @@ func NewLogFilter(rules []Rule) (*LogFilter, error) {
 // logFile: 日志文件路径
 // 返回: 匹配结果列表（一条日志可能匹配多个规则）
 func (lf *LogFilter) Match(logLine string, logFile string) []MatchResult {
-	lf.mu.RLock()
-	defer lf.mu.RUnlock()
+	// 使用原子值无锁读取规则快照
+	snapshot := lf.snapshot.Load().(*ruleSnapshot)
 
-	var results []MatchResult
+	// 预分配容量，假设最多匹配所有规则（实际通常更少）
+	results := make([]MatchResult, 0, len(snapshot.matchers))
 
 	// 遍历所有匹配器
-	for i, matcher := range lf.matchers {
+	for i, matcher := range snapshot.matchers {
 		if matcher.MatchString(logLine) {
-			rule := lf.rules[i]
+			rule := snapshot.rules[i]
 			results = append(results, MatchResult{
 				Rule:    rule,
-				LogLine: logLine,
+				LogLine: logLine, // 注意：这里字符串会被共享，但如果需要修改应该拷贝
 				LogFile: logFile,
 				Tag:     rule.Tag,
 			})
@@ -194,6 +206,7 @@ func (lf *LogFilter) filter(logChan <-chan LogLineWithFile, resultChan chan<- Ma
 
 			// 检查日志行是否匹配规则
 			results := lf.Match(logLineWithFile.LogLine, logLineWithFile.LogFile)
+			// 直接发送所有匹配结果，通道缓冲已经足够大，减少延迟
 			for _, result := range results {
 				select {
 				case resultChan <- result:
@@ -213,7 +226,8 @@ func (lf *LogFilter) Filter(logChan <-chan string, resultChan chan<- MatchResult
 	defer close(resultChan)
 
 	// 转换 channel 类型
-	fileLogChan := make(chan LogLineWithFile, 100)
+	const fileLogChanSize = 500 // 增加缓冲大小，提高性能
+	fileLogChan := make(chan LogLineWithFile, fileLogChanSize)
 	go func() {
 		defer close(fileLogChan)
 		for {
@@ -258,10 +272,13 @@ func (lf *LogFilter) UpdateRules(rules []Rule) error {
 		return fmt.Errorf("没有有效的过滤规则")
 	}
 
-	// 更新规则（需要加锁）
+	// 更新规则快照（需要加锁）
 	lf.mu.Lock()
-	lf.rules = validRules
-	lf.matchers = matchers
+	snapshot := &ruleSnapshot{
+		rules:    validRules,
+		matchers: matchers,
+	}
+	lf.snapshot.Store(snapshot)
 	lf.mu.Unlock()
 
 	log.Printf("成功更新过滤器，加载 %d 条有效规则\n", len(validRules))
@@ -272,12 +289,11 @@ func (lf *LogFilter) UpdateRules(rules []Rule) error {
 // GetRules 获取当前所有规则
 // 返回: 规则列表
 func (lf *LogFilter) GetRules() []Rule {
-	lf.mu.RLock()
-	defer lf.mu.RUnlock()
+	snapshot := lf.snapshot.Load().(*ruleSnapshot)
 
 	// 返回规则的副本
-	rules := make([]Rule, len(lf.rules))
-	copy(rules, lf.rules)
+	rules := make([]Rule, len(snapshot.rules))
+	copy(rules, snapshot.rules)
 	return rules
 }
 

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"log-filter-monitor/internal/filter"
@@ -22,8 +23,9 @@ type LogHandler interface {
 
 // ConsoleHandler 控制台输出处理器
 // 将匹配的日志输出到控制台
+// 注意：fmt.Printf 是线程安全的，不需要额外加锁
 type ConsoleHandler struct {
-	mu sync.Mutex // 保护输出操作的互斥锁
+	// 移除互斥锁，fmt.Printf 本身是线程安全的，加锁会影响性能
 }
 
 // NewConsoleHandler 创建控制台输出处理器
@@ -36,19 +38,17 @@ func NewConsoleHandler() *ConsoleHandler {
 // matchResult: 匹配结果
 // 返回: 错误信息（如果有）
 func (h *ConsoleHandler) Handle(matchResult filter.MatchResult) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	// 输出匹配的日志，包含规则名称和时间戳
+	// fmt.Printf 是线程安全的，不需要加锁
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 
-	// 构建标签信息
-	tagInfo := ""
+	// 优化字符串构建
 	if matchResult.Tag != "" {
-		tagInfo = fmt.Sprintf(" [标签: %s]", matchResult.Tag)
+		fmt.Printf("[%s] [规则: %s] [标签: %s] %s\n",
+			timestamp, matchResult.Rule.Name, matchResult.Tag, matchResult.LogLine)
+	} else {
+		fmt.Printf("[%s] [规则: %s] %s\n",
+			timestamp, matchResult.Rule.Name, matchResult.LogLine)
 	}
-
-	fmt.Printf("[%s] [规则: %s]%s %s\n", timestamp, matchResult.Rule.Name, tagInfo, matchResult.LogLine)
 
 	// 如果规则有描述，也输出描述信息
 	if matchResult.Rule.Description != "" {
@@ -175,26 +175,19 @@ func (h *HTTPHandler) Handle(matchResult filter.MatchResult) error {
 	// 发送HTTP请求
 	err := h.client.Post(h.apiURL, data)
 	if err != nil {
-		h.mu.Lock()
-		h.failed++
-		h.mu.Unlock()
+		atomic.AddInt64(&h.failed, 1)
 		log.Printf("HTTP上报失败: %v\n", err)
 		return err
 	}
 
-	h.mu.Lock()
-	h.success++
-	h.mu.Unlock()
-
+	atomic.AddInt64(&h.success, 1)
 	return nil
 }
 
 // GetStats 获取统计信息
 // 返回: 成功次数和失败次数
 func (h *HTTPHandler) GetStats() (success int64, failed int64) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.success, h.failed
+	return atomic.LoadInt64(&h.success), atomic.LoadInt64(&h.failed)
 }
 
 // MultiHandler 多处理器组合
@@ -237,6 +230,7 @@ type HandlerManager struct {
 	handler              LogHandler
 	metrics              MetricsCollector
 	globalMetricsEnabled bool // 全局指标统计是否启用
+	workerNum            int  // worker goroutine 数量
 	wg                   sync.WaitGroup
 }
 
@@ -244,24 +238,33 @@ type HandlerManager struct {
 // handler: 日志处理器
 // metrics: 指标收集器（可选）
 // globalMetricsEnabled: 全局指标统计是否启用
+// workerNum: worker goroutine 数量（0表示使用默认值：4）
 // 返回: HandlerManager实例
-func NewHandlerManager(handler LogHandler, metrics MetricsCollector, globalMetricsEnabled bool) *HandlerManager {
+func NewHandlerManager(handler LogHandler, metrics MetricsCollector, globalMetricsEnabled bool, workerNum int) *HandlerManager {
+	if workerNum <= 0 {
+		workerNum = 4 // 默认使用4个worker，提高并发处理能力
+	}
+
 	return &HandlerManager{
 		handler:              handler,
 		metrics:              metrics,
 		globalMetricsEnabled: globalMetricsEnabled,
+		workerNum:            workerNum,
 	}
 }
 
-// Start 启动处理器
+// Start 启动处理器（使用多个worker并行处理）
 // resultChan: 匹配结果通道
 // stopChan: 停止信号通道
 func (hm *HandlerManager) Start(resultChan <-chan filter.MatchResult, stopChan <-chan struct{}) {
-	hm.wg.Add(1)
-	go func() {
-		defer hm.wg.Done()
-		hm.process(resultChan, stopChan)
-	}()
+	// 启动多个worker goroutine并行处理
+	for i := 0; i < hm.workerNum; i++ {
+		hm.wg.Add(1)
+		go func(workerID int) {
+			defer hm.wg.Done()
+			hm.process(resultChan, stopChan)
+		}(i)
+	}
 }
 
 // process 处理匹配结果通道
@@ -348,7 +351,7 @@ func CreateHandler(handlerConfig filter.HandlerConfig) (LogHandler, error) {
 // metrics: 指标收集器（可选，如果为 nil 则不统计）
 // globalMetricsEnabled: 全局指标统计是否启用（默认 true）
 func Process(resultChan <-chan filter.MatchResult, stopChan <-chan struct{}, handler LogHandler, metrics MetricsCollector, globalMetricsEnabled bool) {
-	manager := NewHandlerManager(handler, metrics, globalMetricsEnabled)
+	manager := NewHandlerManager(handler, metrics, globalMetricsEnabled, 0)
 	manager.Start(resultChan, stopChan)
 	manager.Wait()
 }

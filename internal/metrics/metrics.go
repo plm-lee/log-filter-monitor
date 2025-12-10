@@ -3,7 +3,9 @@ package metrics
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"log-filter-monitor/internal/filter"
@@ -18,24 +20,25 @@ type MetricsManager struct {
 
 // MetricsCollector 指标收集器
 // 负责统计匹配到的日志数量和指标
+// 使用 sync.Map 和 atomic 操作优化高并发性能
 type MetricsCollector struct {
-	mu           sync.RWMutex                   // 保护统计信息的读写锁
-	counters     map[string]int64               // 每个规则的匹配计数
-	totalCounter int64                          // 总匹配计数
-	startTime    time.Time                      // 开始时间
-	lastResetTime time.Time                     // 上次重置时间
-	interval     time.Duration                  // 统计间隔（默认1分钟）
-	stopChan     chan struct{}                  // 停止信号通道
-	wg           sync.WaitGroup                 // 等待组
+	counters      sync.Map       // 每个规则的匹配计数（key: string, value: *int64）
+	totalCounter  int64          // 总匹配计数（使用 atomic 操作）
+	startTime     time.Time      // 开始时间
+	lastResetTime time.Time      // 上次重置时间
+	mu            sync.Mutex     // 保护时间字段的互斥锁
+	interval      time.Duration  // 统计间隔（默认1分钟）
+	stopChan      chan struct{}  // 停止信号通道
+	wg            sync.WaitGroup // 等待组
 }
 
 // Metrics 指标数据
 // 包含统计信息
 type Metrics struct {
-	Timestamp    int64              `json:"timestamp"`     // 时间戳
-	RuleCounts   map[string]int64   `json:"rule_counts"`   // 每个规则的计数
-	TotalCount   int64              `json:"total_count"`   // 总计数
-	Duration     int64              `json:"duration"`      // 统计时长（秒）
+	Timestamp  int64            `json:"timestamp"`   // 时间戳
+	RuleCounts map[string]int64 `json:"rule_counts"` // 每个规则的计数
+	TotalCount int64            `json:"total_count"` // 总计数
+	Duration   int64            `json:"duration"`    // 统计时长（秒）
 }
 
 // NewMetricsCollector 创建新的指标收集器
@@ -48,22 +51,25 @@ func NewMetricsCollector(interval time.Duration) *MetricsCollector {
 
 	now := time.Now()
 	return &MetricsCollector{
-		counters:     make(map[string]int64),
-		startTime:    now,
+		counters:      sync.Map{},
+		startTime:     now,
 		lastResetTime: now,
-		interval:     interval,
-		stopChan:     make(chan struct{}),
+		interval:      interval,
+		stopChan:      make(chan struct{}),
 	}
 }
 
 // Increment 增加指定规则的计数
 // ruleName: 规则名称
+// 使用 sync.Map 和 atomic 操作，无锁高性能
 func (mc *MetricsCollector) Increment(ruleName string) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
+	// 增加总计数
+	atomic.AddInt64(&mc.totalCounter, 1)
 
-	mc.counters[ruleName]++
-	mc.totalCounter++
+	// 增加规则计数
+	value, _ := mc.counters.LoadOrStore(ruleName, new(int64))
+	counter := value.(*int64)
+	atomic.AddInt64(counter, 1)
 }
 
 // IncrementByMatchResult 根据匹配结果增加计数
@@ -75,64 +81,70 @@ func (mc *MetricsCollector) IncrementByMatchResult(matchResult filter.MatchResul
 // GetMetrics 获取当前指标快照
 // 返回: 指标数据
 func (mc *MetricsCollector) GetMetrics() Metrics {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-
 	// 创建计数器的副本
-	ruleCounts := make(map[string]int64, len(mc.counters))
-	for k, v := range mc.counters {
-		ruleCounts[k] = v
-	}
+	ruleCounts := make(map[string]int64)
+	mc.counters.Range(func(key, value interface{}) bool {
+		ruleName := key.(string)
+		counter := value.(*int64)
+		ruleCounts[ruleName] = atomic.LoadInt64(counter)
+		return true
+	})
 
+	mc.mu.Lock()
 	now := time.Now()
 	duration := now.Sub(mc.lastResetTime).Seconds()
+	mc.mu.Unlock()
 
 	return Metrics{
 		Timestamp:  now.Unix(),
 		RuleCounts: ruleCounts,
-		TotalCount: mc.totalCounter,
+		TotalCount: atomic.LoadInt64(&mc.totalCounter),
 		Duration:   int64(duration),
 	}
 }
 
 // Reset 重置统计计数器
 func (mc *MetricsCollector) Reset() {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
+	// 重置所有计数器
+	mc.counters.Range(func(key, value interface{}) bool {
+		counter := value.(*int64)
+		atomic.StoreInt64(counter, 0)
+		return true
+	})
 
-	mc.counters = make(map[string]int64)
-	mc.totalCounter = 0
+	atomic.StoreInt64(&mc.totalCounter, 0)
+
+	mc.mu.Lock()
 	mc.lastResetTime = time.Now()
+	mc.mu.Unlock()
 }
 
 // GetAndReset 获取当前指标并重置计数器
 // 返回: 重置前的指标数据
 func (mc *MetricsCollector) GetAndReset() Metrics {
+	// 创建计数器的副本并重置
+	ruleCounts := make(map[string]int64)
+	mc.counters.Range(func(key, value interface{}) bool {
+		ruleName := key.(string)
+		counter := value.(*int64)
+		ruleCounts[ruleName] = atomic.SwapInt64(counter, 0) // 原子交换并返回旧值
+		return true
+	})
+
 	mc.mu.Lock()
-	defer mc.mu.Unlock()
-
-	// 创建计数器的副本
-	ruleCounts := make(map[string]int64, len(mc.counters))
-	for k, v := range mc.counters {
-		ruleCounts[k] = v
-	}
-
 	now := time.Now()
 	duration := now.Sub(mc.lastResetTime).Seconds()
+	mc.lastResetTime = now
+	mc.mu.Unlock()
 
-	metrics := Metrics{
+	totalCount := atomic.SwapInt64(&mc.totalCounter, 0)
+
+	return Metrics{
 		Timestamp:  now.Unix(),
 		RuleCounts: ruleCounts,
-		TotalCount: mc.totalCounter,
+		TotalCount: totalCount,
 		Duration:   int64(duration),
 	}
-
-	// 重置计数器
-	mc.counters = make(map[string]int64)
-	mc.totalCounter = 0
-	mc.lastResetTime = now
-
-	return metrics
 }
 
 // Start 启动定期统计输出
@@ -170,40 +182,47 @@ func (mc *MetricsCollector) Stop() {
 // GetTotalCount 获取总计数
 // 返回: 总计数
 func (mc *MetricsCollector) GetTotalCount() int64 {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-	return mc.totalCounter
+	return atomic.LoadInt64(&mc.totalCounter)
 }
 
 // GetRuleCount 获取指定规则的计数
 // ruleName: 规则名称
 // 返回: 该规则的计数
 func (mc *MetricsCollector) GetRuleCount(ruleName string) int64 {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-	return mc.counters[ruleName]
+	value, ok := mc.counters.Load(ruleName)
+	if !ok {
+		return 0
+	}
+	counter := value.(*int64)
+	return atomic.LoadInt64(counter)
 }
 
 // FormatMetrics 格式化指标为字符串
 // metrics: 指标数据
 // 返回: 格式化后的字符串
 func FormatMetrics(metrics Metrics) string {
-	var result string
-	result += fmt.Sprintf("\n========== 指标统计 [%s] ==========\n", time.Unix(metrics.Timestamp, 0).Format("2006-01-02 15:04:05"))
-	result += fmt.Sprintf("统计时长: %d 秒\n", metrics.Duration)
-	result += fmt.Sprintf("总匹配数: %d\n", metrics.TotalCount)
-	
+	// 使用 strings.Builder 优化字符串拼接性能
+	var builder strings.Builder
+	builder.Grow(512) // 预分配容量，减少内存重新分配
+
+	timestampStr := time.Unix(metrics.Timestamp, 0).Format("2006-01-02 15:04:05")
+	builder.WriteString("\n========== 指标统计 [")
+	builder.WriteString(timestampStr)
+	builder.WriteString("] ==========\n")
+	builder.WriteString(fmt.Sprintf("统计时长: %d 秒\n", metrics.Duration))
+	builder.WriteString(fmt.Sprintf("总匹配数: %d\n", metrics.TotalCount))
+
 	if len(metrics.RuleCounts) > 0 {
-		result += "各规则匹配数:\n"
+		builder.WriteString("各规则匹配数:\n")
 		for ruleName, count := range metrics.RuleCounts {
-			result += fmt.Sprintf("  - %s: %d\n", ruleName, count)
+			builder.WriteString(fmt.Sprintf("  - %s: %d\n", ruleName, count))
 		}
 	} else {
-		result += "各规则匹配数: 0\n"
+		builder.WriteString("各规则匹配数: 0\n")
 	}
-	
-	result += "==========================================\n"
-	return result
+
+	builder.WriteString("==========================================\n")
+	return builder.String()
 }
 
 // DefaultOutputFunc 默认输出函数
@@ -277,4 +296,3 @@ func (mm *MetricsManager) GetFinalMetrics() Metrics {
 	}
 	return Metrics{}
 }
-

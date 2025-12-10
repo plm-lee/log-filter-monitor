@@ -27,7 +27,7 @@ rules:
   - name: "错误日志"
     pattern: "ERROR|FATAL|CRITICAL|Exception"
     description: "匹配包含错误、致命错误、严重错误或异常的日志"
-    log_file: /var/log/app/error.log # 监控指定的日志文件
+    log_file: /Users/liqiang/work/yunlaba/falcon-log-agent/access.log # 监控指定的日志文件
     tag: error # 标签，会在打印和上报时带上
     metrics_enable: true # 启用指标统计
     report_mode: full # 上报完整日志（默认值）
@@ -36,7 +36,7 @@ rules:
   - name: "警告日志"
     pattern: "WARN|WARNING"
     description: "匹配包含警告信息的日志"
-    log_file: /var/log/app/app.log # 监控指定的日志文件
+    log_file: /Users/liqiang/work/yunlaba/falcon-log-agent/access.log # 监控指定的日志文件
     tag: warning # 标签
     metrics_enable: true # 启用指标统计
     report_mode: full # 上报完整日志

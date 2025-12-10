@@ -22,7 +22,7 @@ type App struct {
 	filterManager  *filter.FilterManager
 	handlerManager *handler.HandlerManager
 	metricsManager *metrics.MetricsManager
-	
+
 	stopChan   chan struct{}
 	resultChan chan filter.MatchResult
 }
@@ -30,9 +30,15 @@ type App struct {
 // NewApp 创建应用实例
 // 返回: App实例
 func NewApp() *App {
+	// 增加通道缓冲大小，提高并发性能
+	// 对于高吞吐量场景，更大的缓冲可以减少阻塞
+	const (
+		resultChanSize = 1000 // 结果通道缓冲大小（增加到1000）
+	)
+
 	return &App{
 		stopChan:   make(chan struct{}),
-		resultChan: make(chan filter.MatchResult, 100),
+		resultChan: make(chan filter.MatchResult, resultChanSize),
 	}
 }
 
@@ -78,7 +84,7 @@ func (a *App) initMonitor(globalLogFile string) error {
 
 	// 确定需要监控的文件
 	monitoredFiles := make(map[string]bool) // 用于去重
-	
+
 	for _, rule := range a.cfg.Rules {
 		filePath := rule.LogFile
 		if filePath == "" {
@@ -88,7 +94,7 @@ func (a *App) initMonitor(globalLogFile string) error {
 			}
 			filePath = globalLogFile
 		}
-		
+
 		if !monitoredFiles[filePath] {
 			monitoredFiles[filePath] = true
 			if err := a.multiMonitor.AddMonitor(filePath); err != nil {
@@ -133,7 +139,8 @@ func (a *App) initHandler() error {
 		metricsCollector = a.metricsManager.GetCollector()
 	}
 
-	a.handlerManager = handler.NewHandlerManager(logHandler, metricsCollector, globalMetricsEnabled)
+	// 使用默认worker数量（4个），可以根据配置调整
+	a.handlerManager = handler.NewHandlerManager(logHandler, metricsCollector, globalMetricsEnabled, 0)
 	return nil
 }
 
@@ -240,4 +247,3 @@ func ValidateFlags(logFile string) error {
 	}
 	return nil
 }
-

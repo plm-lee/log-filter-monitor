@@ -20,9 +20,12 @@ type MultiMonitor struct {
 // NewMultiMonitor 创建多文件监控管理器
 // 返回: MultiMonitor实例
 func NewMultiMonitor() *MultiMonitor {
+	// 增加通道缓冲大小，提高并发性能
+	const outputChanSize = 500 // 输出通道缓冲大小（增加到500）
+	
 	return &MultiMonitor{
 		monitors:   make(map[string]*LogMonitor),
-		outputChan: make(chan filter.LogLineWithFile, 100),
+		outputChan: make(chan filter.LogLineWithFile, outputChanSize),
 		stopChan:   make(chan struct{}),
 	}
 }
