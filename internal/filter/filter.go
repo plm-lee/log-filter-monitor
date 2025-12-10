@@ -10,12 +10,34 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+const (
+	// ReportModeFull 上报模式：上报完整日志
+	ReportModeFull = "full"
+	// ReportModeMetricsOnly 上报模式：只上报指标统计，不上报完整日志
+	ReportModeMetricsOnly = "metrics_only"
+)
+
 // Rule 过滤规则结构体
 // 定义一条日志过滤规则，包括规则名称、匹配模式和描述
 type Rule struct {
-	Name        string `yaml:"name"`        // 规则名称，用于标识该规则
-	Pattern     string `yaml:"pattern"`     // 正则表达式模式，用于匹配日志内容
-	Description string `yaml:"description"` // 规则描述，说明该规则的用途
+	Name          string `yaml:"name"`           // 规则名称，用于标识该规则
+	Pattern       string `yaml:"pattern"`        // 正则表达式模式，用于匹配日志内容
+	Description   string `yaml:"description"`    // 规则描述，说明该规则的用途
+	LogFile       string `yaml:"log_file"`       // 要监控的日志文件路径（可选，如果未设置则使用全局文件）
+	Tag           string `yaml:"tag"`            // 标签，用于标识该规则（可选，会在打印和上报时带上）
+	MetricsEnable *bool  `yaml:"metrics_enable"` // 是否启用指标统计（指针类型，nil表示使用全局配置，true/false表示显式设置）
+	ReportMode    string `yaml:"report_mode"`    // 上报模式：full（上报完整日志）或 metrics_only（只上报指标，默认：full）
+}
+
+// IsMetricsEnabled 检查是否启用指标统计
+// globalEnabled: 全局指标统计是否启用
+// 返回: 是否启用指标统计
+func (r *Rule) IsMetricsEnabled(globalEnabled bool) bool {
+	if r.MetricsEnable == nil {
+		// 如果规则未显式设置，使用全局配置
+		return globalEnabled
+	}
+	return *r.MetricsEnable
 }
 
 // MatchResult 匹配结果结构体
@@ -23,6 +45,8 @@ type Rule struct {
 type MatchResult struct {
 	Rule    Rule   // 匹配的规则
 	LogLine string // 匹配的日志行内容
+	LogFile string // 日志文件路径
+	Tag     string // 标签
 }
 
 // HandlerConfig 处理器配置结构体
@@ -89,8 +113,9 @@ func NewLogFilter(rules []Rule) (*LogFilter, error) {
 
 // Match 检查日志行是否匹配任何规则
 // logLine: 要检查的日志行内容
+// logFile: 日志文件路径
 // 返回: 匹配结果列表（一条日志可能匹配多个规则）
-func (lf *LogFilter) Match(logLine string) []MatchResult {
+func (lf *LogFilter) Match(logLine string, logFile string) []MatchResult {
 	lf.mu.RLock()
 	defer lf.mu.RUnlock()
 
@@ -99,9 +124,12 @@ func (lf *LogFilter) Match(logLine string) []MatchResult {
 	// 遍历所有匹配器
 	for i, matcher := range lf.matchers {
 		if matcher.MatchString(logLine) {
+			rule := lf.rules[i]
 			results = append(results, MatchResult{
-				Rule:    lf.rules[i],
+				Rule:    rule,
 				LogLine: logLine,
+				LogFile: logFile,
+				Tag:     rule.Tag,
 			})
 		}
 	}
@@ -126,10 +154,10 @@ func NewFilterManager(filter *LogFilter) *FilterManager {
 }
 
 // Start 启动过滤器
-// logChan: 输入日志通道
+// logChan: 输入日志通道（带文件信息）
 // resultChan: 输出匹配结果通道
 // stopChan: 停止信号通道
-func (fm *FilterManager) Start(logChan <-chan string, resultChan chan<- MatchResult, stopChan <-chan struct{}) {
+func (fm *FilterManager) Start(logChan <-chan LogLineWithFile, resultChan chan<- MatchResult, stopChan <-chan struct{}) {
 	fm.wg.Add(1)
 	go func() {
 		defer fm.wg.Done()
@@ -143,23 +171,29 @@ func (fm *FilterManager) Wait() {
 	fm.wg.Wait()
 }
 
+// LogLineWithFile 带文件信息的日志行
+type LogLineWithFile struct {
+	LogLine string // 日志行内容
+	LogFile string // 日志文件路径
+}
+
 // filter 过滤日志通道，将匹配的日志发送到结果通道（内部方法）
-// logChan: 输入日志通道
+// logChan: 输入日志通道（带文件信息）
 // resultChan: 输出匹配结果通道
 // stopChan: 停止信号通道
-func (lf *LogFilter) filter(logChan <-chan string, resultChan chan<- MatchResult, stopChan <-chan struct{}) {
+func (lf *LogFilter) filter(logChan <-chan LogLineWithFile, resultChan chan<- MatchResult, stopChan <-chan struct{}) {
 	for {
 		select {
 		case <-stopChan:
 			return
-		case logLine, ok := <-logChan:
+		case logLineWithFile, ok := <-logChan:
 			if !ok {
 				// 通道已关闭
 				return
 			}
 
 			// 检查日志行是否匹配规则
-			results := lf.Match(logLine)
+			results := lf.Match(logLineWithFile.LogLine, logLineWithFile.LogFile)
 			for _, result := range results {
 				select {
 				case resultChan <- result:
@@ -171,13 +205,35 @@ func (lf *LogFilter) filter(logChan <-chan string, resultChan chan<- MatchResult
 	}
 }
 
-// Filter 过滤日志通道，将匹配的日志发送到结果通道（保留向后兼容）
-// logChan: 输入日志通道
+// Filter 过滤日志通道，将匹配的日志发送到结果通道（保留向后兼容，使用空字符串作为文件路径）
+// logChan: 输入日志通道（字符串格式）
 // resultChan: 输出匹配结果通道
 // stopChan: 停止信号通道
 func (lf *LogFilter) Filter(logChan <-chan string, resultChan chan<- MatchResult, stopChan <-chan struct{}) {
 	defer close(resultChan)
-	lf.filter(logChan, resultChan, stopChan)
+
+	// 转换 channel 类型
+	fileLogChan := make(chan LogLineWithFile, 100)
+	go func() {
+		defer close(fileLogChan)
+		for {
+			select {
+			case <-stopChan:
+				return
+			case logLine, ok := <-logChan:
+				if !ok {
+					return
+				}
+				select {
+				case fileLogChan <- LogLineWithFile{LogLine: logLine, LogFile: ""}:
+				case <-stopChan:
+					return
+				}
+			}
+		}
+	}()
+
+	lf.filter(fileLogChan, resultChan, stopChan)
 }
 
 // UpdateRules 更新过滤规则
@@ -246,14 +302,29 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("配置文件中没有定义任何规则")
 	}
 
-	// 验证每条规则
-	for i, rule := range config.Rules {
+	// 验证每条规则并设置默认值
+	for i := range config.Rules {
+		rule := &config.Rules[i]
 		if rule.Name == "" {
 			return nil, fmt.Errorf("规则 #%d 缺少名称", i+1)
 		}
 		if rule.Pattern == "" {
 			return nil, fmt.Errorf("规则 '%s' 缺少匹配模式", rule.Name)
 		}
+
+		// 设置默认值
+		if rule.ReportMode == "" {
+			rule.ReportMode = ReportModeFull // 默认上报完整日志
+		}
+		if rule.ReportMode != ReportModeFull && rule.ReportMode != ReportModeMetricsOnly {
+			return nil, fmt.Errorf("规则 '%s' 的 report_mode 必须为 '%s' 或 '%s'", rule.Name, ReportModeFull, ReportModeMetricsOnly)
+		}
+		// 注意：MetricsEnable 在 YAML 中如果不设置，零值是 false
+		// 为了支持默认启用，我们需要特殊处理。但为了简化，这里保持原样
+		// 用户需要显式设置 metrics_enable: true 来启用指标统计
+		// 如果设置为 false，则禁用指标统计
+
+		// log_file 和 tag 是可选字段，无需验证
 	}
 
 	// 验证处理器配置

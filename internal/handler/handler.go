@@ -41,7 +41,14 @@ func (h *ConsoleHandler) Handle(matchResult filter.MatchResult) error {
 
 	// 输出匹配的日志，包含规则名称和时间戳
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Printf("[%s] [规则: %s] %s\n", timestamp, matchResult.Rule.Name, matchResult.LogLine)
+
+	// 构建标签信息
+	tagInfo := ""
+	if matchResult.Tag != "" {
+		tagInfo = fmt.Sprintf(" [标签: %s]", matchResult.Tag)
+	}
+
+	fmt.Printf("[%s] [规则: %s]%s %s\n", timestamp, matchResult.Rule.Name, tagInfo, matchResult.LogLine)
 
 	// 如果规则有描述，也输出描述信息
 	if matchResult.Rule.Description != "" {
@@ -156,7 +163,13 @@ func (h *HTTPHandler) Handle(matchResult filter.MatchResult) error {
 		"rule_name": matchResult.Rule.Name,
 		"rule_desc": matchResult.Rule.Description,
 		"log_line":  matchResult.LogLine,
+		"log_file":  matchResult.LogFile,
 		"pattern":   matchResult.Rule.Pattern,
+	}
+
+	// 如果设置了标签，添加到上报数据中
+	if matchResult.Tag != "" {
+		data["tag"] = matchResult.Tag
 	}
 
 	// 发送HTTP请求
@@ -221,19 +234,22 @@ type MetricsCollector interface {
 // HandlerManager 处理器管理器
 // 负责管理日志处理器的创建和运行
 type HandlerManager struct {
-	handler LogHandler
-	metrics MetricsCollector
-	wg      sync.WaitGroup
+	handler              LogHandler
+	metrics              MetricsCollector
+	globalMetricsEnabled bool // 全局指标统计是否启用
+	wg                   sync.WaitGroup
 }
 
 // NewHandlerManager 创建处理器管理器
 // handler: 日志处理器
 // metrics: 指标收集器（可选）
+// globalMetricsEnabled: 全局指标统计是否启用
 // 返回: HandlerManager实例
-func NewHandlerManager(handler LogHandler, metrics MetricsCollector) *HandlerManager {
+func NewHandlerManager(handler LogHandler, metrics MetricsCollector, globalMetricsEnabled bool) *HandlerManager {
 	return &HandlerManager{
-		handler: handler,
-		metrics: metrics,
+		handler:              handler,
+		metrics:              metrics,
+		globalMetricsEnabled: globalMetricsEnabled,
 	}
 }
 
@@ -262,12 +278,20 @@ func (hm *HandlerManager) process(resultChan <-chan filter.MatchResult, stopChan
 				return
 			}
 
-			// 统计指标
-			if hm.metrics != nil {
+			// 统计指标（如果规则启用了指标统计）
+			// 如果规则显式设置了 metrics_enable，使用规则的设置；否则使用全局配置
+			if hm.metrics != nil && result.Rule.IsMetricsEnabled(hm.globalMetricsEnabled) {
 				hm.metrics.IncrementByMatchResult(result)
 			}
 
-			// 处理匹配结果
+			// 根据规则的上报模式决定是否处理完整日志
+			// 如果 report_mode 为 "metrics_only"，则不上报完整日志
+			if result.Rule.ReportMode == filter.ReportModeMetricsOnly {
+				// 只统计指标，不上报完整日志
+				continue
+			}
+
+			// 上报完整日志（report_mode 为 "full" 或默认）
 			if err := hm.handler.Handle(result); err != nil {
 				log.Printf("处理匹配结果时出错: %v\n", err)
 			}
@@ -322,8 +346,9 @@ func CreateHandler(handlerConfig filter.HandlerConfig) (LogHandler, error) {
 // stopChan: 停止信号通道
 // handler: 日志处理器
 // metrics: 指标收集器（可选，如果为 nil 则不统计）
-func Process(resultChan <-chan filter.MatchResult, stopChan <-chan struct{}, handler LogHandler, metrics MetricsCollector) {
-	manager := NewHandlerManager(handler, metrics)
+// globalMetricsEnabled: 全局指标统计是否启用（默认 true）
+func Process(resultChan <-chan filter.MatchResult, stopChan <-chan struct{}, handler LogHandler, metrics MetricsCollector, globalMetricsEnabled bool) {
+	manager := NewHandlerManager(handler, metrics, globalMetricsEnabled)
 	manager.Start(resultChan, stopChan)
 	manager.Wait()
 }

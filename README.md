@@ -83,6 +83,11 @@ rules:
   - name: "规则名称"
     pattern: "正则表达式模式"
     description: "规则描述（可选）"
+    metrics_enable: true # 是否启用指标统计（可选，不设置时使用全局配置）
+    report_mode:
+      full # 上报模式（可选，默认：full）
+      #   - full: 上报完整日志
+      #   - metrics_only: 只上报指标统计，不上报完整日志
 ```
 
 ### 配置示例
@@ -129,18 +134,25 @@ rules:
   - name: "错误日志"
     pattern: "ERROR|FATAL|CRITICAL|Exception"
     description: "匹配包含错误、致命错误、严重错误或异常的日志"
+    metrics_enable: true
+    report_mode: full # 上报完整日志
 
   - name: "特定IP访问"
     pattern: "192\\.168\\.1\\.(100|101|102)"
     description: "匹配来自特定IP地址的访问日志"
+    metrics_enable: true
+    report_mode: metrics_only # 只上报指标统计
 
   - name: "数据库操作"
     pattern: "(SELECT|INSERT|UPDATE|DELETE).*FROM|database|Database|DB"
     description: "匹配数据库相关操作的日志"
+    # 使用全局配置的 metrics_enable 和默认的 report_mode: full
 
   - name: "HTTP错误状态码"
     pattern: "HTTP/1\\.\\d\"\\s+(4\\d{2}|5\\d{2})"
     description: "匹配HTTP 4xx和5xx错误状态码"
+    metrics_enable: true
+    report_mode: metrics_only # 只上报指标统计
 ```
 
 ### 正则表达式提示
@@ -296,7 +308,16 @@ rules:
   - name: "新规则名称"
     pattern: "你的正则表达式"
     description: "规则说明"
+    metrics_enable: true # 是否启用指标统计（可选，不设置时使用全局配置）
+    report_mode: full # 上报模式：full（完整日志）或 metrics_only（只上报指标）
 ```
+
+**上报模式说明**：
+
+- `full`（默认）：匹配到日志时，既统计指标，也上报完整日志内容
+- `metrics_only`：匹配到日志时，只统计指标，定时上报统计数量，不上报完整日志内容
+
+这种设计适合高频日志场景，可以减少网络传输和存储成本，同时保持监控能力。
 
 ### 添加自定义处理器
 

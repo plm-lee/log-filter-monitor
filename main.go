@@ -16,16 +16,9 @@ import (
 
 func main() {
 	// 解析命令行参数
-	logFile := flag.String("file", "", "要监控的日志文件路径（必需）")
+	logFile := flag.String("file", "", "要监控的日志文件路径（可选，如果规则中配置了log_file则不需要）")
 	configFile := flag.String("config", "config.yaml", "配置文件路径（可选，默认：config.yaml）")
 	flag.Parse()
-
-	if *logFile == "" {
-		fmt.Println("错误：必须指定要监控的日志文件路径")
-		fmt.Println("使用方法：")
-		flag.PrintDefaults()
-		os.Exit(1)
-	}
 
 	// 加载完整配置
 	cfg, err := filter.LoadConfig(*configFile)
@@ -33,10 +26,41 @@ func main() {
 		log.Fatalf("加载配置文件失败: %v", err)
 	}
 
-	// 创建日志监控器
-	logMonitor := monitor.NewLogMonitor(*logFile)
-	if err := logMonitor.Start(); err != nil {
-		log.Fatalf("启动日志监控失败: %v", err)
+	// 创建多文件监控管理器
+	multiMonitor := monitor.NewMultiMonitor()
+
+	// 确定需要监控的文件
+	// 1. 如果规则中配置了 log_file，使用规则中的配置
+	// 2. 如果规则中没有配置，使用全局文件（通过 -file 参数指定）
+	monitoredFiles := make(map[string]bool) // 用于去重
+	for _, rule := range cfg.Rules {
+		filePath := rule.LogFile
+		if filePath == "" {
+			// 如果规则中没有配置 log_file，使用全局文件
+			if *logFile == "" {
+				log.Fatalf("错误：规则 '%s' 未配置 log_file，且未通过 -file 参数指定全局日志文件", rule.Name)
+			}
+			filePath = *logFile
+		}
+		if !monitoredFiles[filePath] {
+			monitoredFiles[filePath] = true
+			if err := multiMonitor.AddMonitor(filePath); err != nil {
+				log.Fatalf("添加监控文件失败: %v", err)
+			}
+		}
+	}
+
+	// 如果没有监控任何文件，检查是否有全局文件
+	if len(monitoredFiles) == 0 {
+		if *logFile == "" {
+			fmt.Println("错误：必须通过 -file 参数指定日志文件，或在规则中配置 log_file")
+			fmt.Println("使用方法：")
+			flag.PrintDefaults()
+			os.Exit(1)
+		}
+		if err := multiMonitor.AddMonitor(*logFile); err != nil {
+			log.Fatalf("启动日志监控失败: %v", err)
+		}
 	}
 
 	// 创建日志过滤器
@@ -67,15 +91,16 @@ func main() {
 		metricsManager.Start(metrics.LogOutputFunc)
 	}
 
-	// 启动日志过滤
-	filterManager.Start(logMonitor.LogChan, resultChan, stopChan)
+	// 启动日志过滤（使用多监控管理器的输出通道）
+	filterManager.Start(multiMonitor.GetOutputChan(), resultChan, stopChan)
 
 	// 启动日志处理
 	var metricsCollector handler.MetricsCollector
+	globalMetricsEnabled := cfg.Metrics.Enabled
 	if metricsManager != nil && metricsManager.GetCollector() != nil {
 		metricsCollector = metricsManager.GetCollector()
 	}
-	handlerManager := handler.NewHandlerManager(logHandler, metricsCollector)
+	handlerManager := handler.NewHandlerManager(logHandler, metricsCollector, globalMetricsEnabled)
 	handlerManager.Start(resultChan, stopChan)
 
 	log.Println("日志过滤监控系统已启动")
@@ -91,7 +116,7 @@ func main() {
 	close(stopChan)
 
 	// 停止各个模块
-	logMonitor.Stop()
+	multiMonitor.Stop()
 	filterManager.Wait()
 	handlerManager.Wait()
 	if metricsManager != nil {

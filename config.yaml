@@ -3,6 +3,8 @@
 #   - name: 规则名称（必需）
 #   - pattern: 正则表达式模式（必需）
 #   - description: 规则描述（可选）
+#   - log_file: 要监控的日志文件路径（可选，如果未设置则使用全局文件）
+#   - tag: 标签（可选，会在打印和上报时带上）
 
 # 处理器配置
 handler:
@@ -21,27 +23,47 @@ metrics:
   # interval: 1m
 
 rules:
-  # 错误日志规则
+  # 错误日志规则（上报完整日志）
   - name: "错误日志"
     pattern: "ERROR|FATAL|CRITICAL|Exception"
     description: "匹配包含错误、致命错误、严重错误或异常的日志"
+    log_file: /var/log/app/error.log # 监控指定的日志文件
+    tag: error # 标签，会在打印和上报时带上
+    metrics_enable: true # 启用指标统计
+    report_mode: full # 上报完整日志（默认值）
 
-  # 警告日志规则
+  # 警告日志规则（上报完整日志）
   - name: "警告日志"
     pattern: "WARN|WARNING"
     description: "匹配包含警告信息的日志"
+    log_file: /var/log/app/app.log # 监控指定的日志文件
+    tag: warning # 标签
+    metrics_enable: true # 启用指标统计
+    report_mode: full # 上报完整日志
 
-  # 特定IP地址访问规则
+  # 特定IP地址访问规则（只上报指标，不上报完整日志）
   - name: "特定IP访问"
     pattern: "192\\.168\\.1\\.(100|101|102)"
     description: "匹配来自特定IP地址的访问日志"
+    log_file: /var/log/nginx/access.log # 监控指定的日志文件
+    tag: ip-access # 标签
+    metrics_enable: true # 启用指标统计
+    report_mode: metrics_only # 只上报指标统计，不上报完整日志
 
-  # 数据库相关日志规则
+  # 数据库相关日志规则（上报完整日志）
   - name: "数据库操作"
     pattern: "(SELECT|INSERT|UPDATE|DELETE).*FROM|database|Database|DB"
     description: "匹配数据库相关操作的日志"
+    log_file: /var/log/app/app.log # 监控指定的日志文件
+    tag: database # 标签
+    # metrics_enable 未设置时，使用全局配置
+    # report_mode 未设置时，默认为 full
 
-  # HTTP状态码规则
+  # HTTP状态码规则（只上报指标）
   - name: "HTTP错误状态码"
     pattern: "HTTP/1\\.\\d\"\\s+(4\\d{2}|5\\d{2})"
     description: "匹配HTTP 4xx和5xx错误状态码"
+    log_file: /var/log/nginx/access.log # 监控指定的日志文件
+    tag: http-error # 标签
+    metrics_enable: true # 启用指标统计
+    report_mode: metrics_only # 只上报指标统计，不上报完整日志
