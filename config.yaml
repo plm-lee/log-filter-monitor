@@ -1,26 +1,24 @@
-# 日志过滤规则配置文件
-# 每条规则包含：
-#   - name: 规则名称（必需）
-#   - pattern: 正则表达式模式（必需）
-#   - description: 规则描述（可选）
-#   - log_file: 要监控的日志文件路径（可选，如果未设置则使用全局文件）
-#   - tag: 标签（可选，会在打印和上报时带上）
-
 # 处理器配置
 handler:
   # 处理器类型：console（控制台输出）或 http（HTTP上报）
-  type: console
+  type: http
   # HTTP上报接口地址（当type为http时必需）
-  # api_url: http://your-api-endpoint.com/logs
+  api_url: http://localhost:8080/api/v1/logs
   # HTTP请求超时时间（可选，默认：10s，单位：s、m、h）
-  # timeout: 10s
+  timeout: 1s
 
 # 指标统计配置
 metrics:
   # 是否启用指标统计（默认：true）
   enabled: true
   # 统计间隔（可选，默认：1m，单位：s、m、h）
-  # interval: 1m
+  # 指标会按此间隔定时统计和上报，时间戳会对齐到最近的间隔
+  interval: 1m
+  # 指标上报API地址（可选，如果配置则会将指标统计数据上报到HTTP接口）
+  # 指标会按标签维度分组上报，格式参考 falcon-log-agent
+  api_url: http://localhost:8080/api/v1/metrics
+  # HTTP请求超时时间（可选，默认：10s）
+  timeout: 1s
 
 rules:
   # 错误日志规则（上报完整日志）
@@ -40,30 +38,3 @@ rules:
     tag: warning # 标签
     metrics_enable: true # 启用指标统计
     report_mode: full # 上报完整日志
-
-  # 特定IP地址访问规则（只上报指标，不上报完整日志）
-  - name: "特定IP访问"
-    pattern: "192\\.168\\.1\\.(100|101|102)"
-    description: "匹配来自特定IP地址的访问日志"
-    log_file: /var/log/nginx/access.log # 监控指定的日志文件
-    tag: ip-access # 标签
-    metrics_enable: true # 启用指标统计
-    report_mode: metrics_only # 只上报指标统计，不上报完整日志
-
-  # 数据库相关日志规则（上报完整日志）
-  - name: "数据库操作"
-    pattern: "(SELECT|INSERT|UPDATE|DELETE).*FROM|database|Database|DB"
-    description: "匹配数据库相关操作的日志"
-    log_file: /var/log/app/app.log # 监控指定的日志文件
-    tag: database # 标签
-    # metrics_enable 未设置时，使用全局配置
-    # report_mode 未设置时，默认为 full
-
-  # HTTP状态码规则（只上报指标）
-  - name: "HTTP错误状态码"
-    pattern: "HTTP/1\\.\\d\"\\s+(4\\d{2}|5\\d{2})"
-    description: "匹配HTTP 4xx和5xx错误状态码"
-    log_file: /var/log/nginx/access.log # 监控指定的日志文件
-    tag: http-error # 标签
-    metrics_enable: true # 启用指标统计
-    report_mode: metrics_only # 只上报指标统计，不上报完整日志

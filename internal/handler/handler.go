@@ -287,13 +287,6 @@ func (hm *HandlerManager) process(resultChan <-chan filter.MatchResult, stopChan
 				hm.metrics.IncrementByMatchResult(result)
 			}
 
-			// 根据规则的上报模式决定是否处理完整日志
-			// 如果 report_mode 为 "metrics_only"，则不上报完整日志
-			if result.Rule.ReportMode == filter.ReportModeMetricsOnly {
-				// 只统计指标，不上报完整日志
-				continue
-			}
-
 			// 上报完整日志（report_mode 为 "full" 或默认）
 			if err := hm.handler.Handle(result); err != nil {
 				log.Printf("处理匹配结果时出错: %v\n", err)

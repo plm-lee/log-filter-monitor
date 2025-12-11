@@ -27,7 +27,6 @@ type Rule struct {
 	LogFile       string `yaml:"log_file"`       // 要监控的日志文件路径（可选，如果未设置则使用全局文件）
 	Tag           string `yaml:"tag"`            // 标签，用于标识该规则（可选，会在打印和上报时带上）
 	MetricsEnable *bool  `yaml:"metrics_enable"` // 是否启用指标统计（指针类型，nil表示使用全局配置，true/false表示显式设置）
-	ReportMode    string `yaml:"report_mode"`    // 上报模式：full（上报完整日志）或 metrics_only（只上报指标，默认：full）
 }
 
 // IsMetricsEnabled 检查是否启用指标统计
@@ -63,6 +62,8 @@ type HandlerConfig struct {
 type MetricsConfig struct {
 	Enabled  bool   `yaml:"enabled"`  // 是否启用指标统计（默认：true）
 	Interval string `yaml:"interval"` // 统计间隔（可选，默认：1m，单位：s、m、h）
+	APIURL   string `yaml:"api_url"`  // 指标上报API地址（可选，如果配置则会上报到HTTP接口）
+	Timeout  string `yaml:"timeout"`  // HTTP请求超时时间（可选，默认：10s）
 }
 
 // Config 配置文件结构体
@@ -327,20 +328,6 @@ func LoadConfig(configPath string) (*Config, error) {
 		if rule.Pattern == "" {
 			return nil, fmt.Errorf("规则 '%s' 缺少匹配模式", rule.Name)
 		}
-
-		// 设置默认值
-		if rule.ReportMode == "" {
-			rule.ReportMode = ReportModeFull // 默认上报完整日志
-		}
-		if rule.ReportMode != ReportModeFull && rule.ReportMode != ReportModeMetricsOnly {
-			return nil, fmt.Errorf("规则 '%s' 的 report_mode 必须为 '%s' 或 '%s'", rule.Name, ReportModeFull, ReportModeMetricsOnly)
-		}
-		// 注意：MetricsEnable 在 YAML 中如果不设置，零值是 false
-		// 为了支持默认启用，我们需要特殊处理。但为了简化，这里保持原样
-		// 用户需要显式设置 metrics_enable: true 来启用指标统计
-		// 如果设置为 false，则禁用指标统计
-
-		// log_file 和 tag 是可选字段，无需验证
 	}
 
 	// 验证处理器配置
@@ -355,11 +342,6 @@ func LoadConfig(configPath string) (*Config, error) {
 		if config.Handler.APIURL == "" {
 			return nil, fmt.Errorf("使用HTTP处理器时必须配置 api_url")
 		}
-	}
-
-	// 验证处理器类型
-	if config.Handler.Type != "console" && config.Handler.Type != "http" {
-		return nil, fmt.Errorf("不支持的处理器类型 '%s'，支持的类型：console, http", config.Handler.Type)
 	}
 
 	// 如果没有配置 metrics，默认启用
