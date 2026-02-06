@@ -1,6 +1,6 @@
 #!/bin/sh
 # log-filter-monitor 一键安装脚本
-# 从 GitHub Release 下载二进制并运行
+# 从 GitHub Release 下载二进制，配置 PATH，不立即启动
 # 用法: curl -fsSL https://raw.githubusercontent.com/plm-lee/log-filter-monitor/main/install.sh | sh
 # 指定版本: VERSION=v1.0.0 curl -fsSL ... | sh
 
@@ -72,6 +72,29 @@ rules:
 CONFIG_EOF
 }
 
+# 将 BIN_DIR 加入 PATH
+add_to_path() {
+    case ":$PATH:" in
+        *":${BIN_DIR}:"*) return 0 ;;
+    esac
+    RC_FILE=""
+    if [ -n "${SHELL}" ] && case "${SHELL}" in *zsh*) true;; *) false;; esac; then
+        RC_FILE="${HOME}/.zshrc"
+    elif [ -f "${HOME}/.zshrc" ]; then
+        RC_FILE="${HOME}/.zshrc"
+    elif [ -f "${HOME}/.bashrc" ]; then
+        RC_FILE="${HOME}/.bashrc"
+    else
+        RC_FILE="${HOME}/.profile"
+    fi
+    if ! grep -q ".log-agent/bin" "${RC_FILE}" 2>/dev/null; then
+        echo "" >> "${RC_FILE}"
+        echo "# log-filter-monitor" >> "${RC_FILE}"
+        echo "export PATH=\"\${HOME}/.log-agent/bin:\$PATH\"" >> "${RC_FILE}"
+        echo "已添加至 PATH: ${RC_FILE}"
+    fi
+}
+
 echo "=== log-filter-monitor 一键安装 ==="
 
 # 确定版本
@@ -120,11 +143,27 @@ else
     echo "配置文件已存在: ${CONFIG_DIR}/config.yaml"
 fi
 
-# 启动
-echo ""
-echo "=== 启动 log-filter-monitor ==="
-echo "配置: ${CONFIG_DIR}/config.yaml"
-echo "按 Ctrl+C 停止"
-echo ""
+# 加入 PATH
+add_to_path
 
-exec "${BIN_DIR}/${BINARY_NAME}" -config "${CONFIG_DIR}/config.yaml"
+# 安装完成提示
+echo ""
+echo "=== 安装完成 ==="
+echo ""
+echo "已安装: ${BIN_DIR}/${BINARY_NAME}"
+echo "配置: ${CONFIG_DIR}/config.yaml"
+echo ""
+echo "PATH 已更新，请执行以下命令使 PATH 生效（或重新打开终端）："
+echo "  source ~/.zshrc    # 使用 zsh 时"
+echo "  或"
+echo "  source ~/.bashrc   # 使用 bash 时"
+echo ""
+echo "后续操作："
+echo "  1. 编辑配置文件，设置 api_url 和 rules 中的 log_file："
+echo "     \${EDITOR:-vim} ${CONFIG_DIR}/config.yaml"
+echo ""
+echo "  2. 启动服务："
+echo "     log-filter-monitor -config ${CONFIG_DIR}/config.yaml"
+echo ""
+echo "  3. 后台运行（可选）："
+echo "     nohup log-filter-monitor -config ${CONFIG_DIR}/config.yaml > ${CONFIG_DIR}/logs/monitor.log 2>\&1 \&"
