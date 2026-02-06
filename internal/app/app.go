@@ -139,8 +139,8 @@ func (a *App) initHandler() error {
 		metricsCollector = a.metricsManager.GetCollector()
 	}
 
-	// 使用默认worker数量（4个），可以根据配置调整
-	a.handlerManager = handler.NewHandlerManager(logHandler, metricsCollector, globalMetricsEnabled, 0)
+	workerNum := a.cfg.Handler.WorkerNum
+	a.handlerManager = handler.NewHandlerManager(logHandler, metricsCollector, globalMetricsEnabled, workerNum)
 	return nil
 }
 
@@ -222,6 +222,9 @@ func (a *App) printFinalStats() {
 		if httpHandler, ok := logHandler.(*handler.HTTPHandler); ok {
 			success, failed := httpHandler.GetStats()
 			log.Printf("HTTP上报统计 - 成功: %d, 失败: %d\n", success, failed)
+		} else if batchHandler, ok := logHandler.(*handler.BatchHTTPHandler); ok {
+			success, failed := batchHandler.GetStats()
+			log.Printf("HTTP批量上报统计 - 成功: %d, 失败: %d\n", success, failed)
 		}
 	}
 }

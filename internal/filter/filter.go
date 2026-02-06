@@ -59,9 +59,13 @@ type MatchResult struct {
 // HandlerConfig 处理器配置结构体
 // 定义日志处理器的配置信息
 type HandlerConfig struct {
-	Type    string `yaml:"type"`    // 处理器类型：console 或 http
-	APIURL  string `yaml:"api_url"` // HTTP上报接口地址（当type为http时必需）
-	Timeout string `yaml:"timeout"` // HTTP请求超时时间（可选，默认：10s）
+	Type           string `yaml:"type"`            // 处理器类型：console 或 http
+	APIURL         string `yaml:"api_url"`         // HTTP上报接口地址（当type为http时必需）
+	Timeout        string `yaml:"timeout"`         // HTTP请求超时时间（可选，默认：10s）
+	BatchEnabled   *bool  `yaml:"batch_enabled"`   // 是否启用批量上报（nil/true=启用，false=逐条，默认启用以支撑高吞吐）
+	BatchSize      int    `yaml:"batch_size"`      // 每批条数（可选，默认：100，最大100）
+	BatchInterval  string `yaml:"batch_interval"`  // 批量刷新间隔（可选，默认：1s）
+	WorkerNum      int    `yaml:"worker_num"`      // handler worker 数量（0=默认4，高吞吐场景可调大）
 }
 
 // MetricsConfig 指标统计配置结构体

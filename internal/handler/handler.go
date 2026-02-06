@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -82,12 +83,17 @@ type defaultHTTPClient struct {
 }
 
 // NewDefaultHTTPClient 创建默认HTTP客户端
-// timeout: 请求超时时间
-// 返回: defaultHTTPClient实例
+// 使用连接池复用 TCP 连接，支撑高吞吐
 func NewDefaultHTTPClient(timeout time.Duration) *defaultHTTPClient {
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 50,
+		IdleConnTimeout:     90 * time.Second,
+	}
 	return &defaultHTTPClient{
 		client: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: transport,
 		},
 		timeout: timeout,
 	}
@@ -187,6 +193,130 @@ func (h *HTTPHandler) Handle(matchResult filter.MatchResult) error {
 // GetStats 获取统计信息
 // 返回: 成功次数和失败次数
 func (h *HTTPHandler) GetStats() (success int64, failed int64) {
+	return atomic.LoadInt64(&h.success), atomic.LoadInt64(&h.failed)
+}
+
+// BatchHTTPHandler 批量HTTP上报处理器
+// 缓冲匹配结果，按条数或定时批量发送到 POST /api/v1/logs/batch
+type BatchHTTPHandler struct {
+	apiURL         string
+	batchURL       string
+	client         HTTPClient
+	timeout        time.Duration
+	batchSize      int
+	flushInterval  time.Duration
+	buffer         []filter.MatchResult
+	mu             sync.Mutex
+	success        int64
+	failed         int64
+	stopChan       chan struct{}
+	wg             sync.WaitGroup
+}
+
+// NewBatchHTTPHandler 创建批量HTTP处理器
+func NewBatchHTTPHandler(apiURL string, timeout time.Duration, batchSize int, flushInterval time.Duration) *BatchHTTPHandler {
+	batchURL := strings.TrimSuffix(apiURL, "/") + "/batch"
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+	if batchSize > 100 {
+		batchSize = 100
+	}
+	if flushInterval <= 0 {
+		flushInterval = time.Second
+	}
+	h := &BatchHTTPHandler{
+		apiURL:        apiURL,
+		batchURL:      batchURL,
+		client:        NewDefaultHTTPClient(timeout),
+		timeout:       timeout,
+		batchSize:     batchSize,
+		flushInterval: flushInterval,
+		buffer:        make([]filter.MatchResult, 0, batchSize),
+		stopChan:      make(chan struct{}),
+	}
+	h.wg.Add(1)
+	go h.flushLoop()
+	return h
+}
+
+// matchResultToLogItem 将 MatchResult 转为 batch API 的 log 项
+func matchResultToLogItem(m filter.MatchResult) map[string]interface{} {
+	item := map[string]interface{}{
+		"timestamp": time.Now().Unix(),
+		"rule_name": m.Rule.Name,
+		"rule_desc": m.Rule.Description,
+		"log_line":  m.LogLine,
+		"log_file":  m.LogFile,
+		"pattern":   m.Rule.Pattern,
+	}
+	if m.Tag != "" {
+		item["tag"] = m.Tag
+	}
+	return item
+}
+
+// flush 发送缓冲区中的日志（需持有 mu）
+func (h *BatchHTTPHandler) flushLocked() {
+	if len(h.buffer) == 0 {
+		return
+	}
+	batch := h.buffer
+	h.buffer = make([]filter.MatchResult, 0, h.batchSize)
+
+	logs := make([]map[string]interface{}, 0, len(batch))
+	for _, m := range batch {
+		logs = append(logs, matchResultToLogItem(m))
+	}
+	payload := map[string]interface{}{"logs": logs}
+	if err := h.client.Post(h.batchURL, payload); err != nil {
+		atomic.AddInt64(&h.failed, int64(len(batch)))
+		log.Printf("批量HTTP上报失败: %v\n", err)
+	} else {
+		atomic.AddInt64(&h.success, int64(len(batch)))
+	}
+}
+
+// flushLoop 定时刷新
+func (h *BatchHTTPHandler) flushLoop() {
+	defer h.wg.Done()
+	ticker := time.NewTicker(h.flushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.stopChan:
+			h.mu.Lock()
+			h.flushLocked()
+			h.mu.Unlock()
+			return
+		case <-ticker.C:
+			h.mu.Lock()
+			h.flushLocked()
+			h.mu.Unlock()
+		}
+	}
+}
+
+// Handle 将匹配结果加入缓冲区，达到批量大小时立即发送
+func (h *BatchHTTPHandler) Handle(matchResult filter.MatchResult) error {
+	h.mu.Lock()
+	h.buffer = append(h.buffer, matchResult)
+	shouldFlush := len(h.buffer) >= h.batchSize
+	if shouldFlush {
+		h.flushLocked()
+	}
+	h.mu.Unlock()
+	return nil
+}
+
+// Stop 停止处理器并刷新剩余数据
+func (h *BatchHTTPHandler) Stop() {
+	close(h.stopChan)
+	h.wg.Wait()
+}
+
+// GetStats 获取统计信息
+func (h *BatchHTTPHandler) GetStats() (success int64, failed int64) {
 	return atomic.LoadInt64(&h.success), atomic.LoadInt64(&h.failed)
 }
 
@@ -300,9 +430,12 @@ func (hm *HandlerManager) process(resultChan <-chan filter.MatchResult, stopChan
 	}
 }
 
-// Wait 等待处理器完成
+// Wait 等待处理器完成，并停止可停止的处理器（如 BatchHTTPHandler）
 func (hm *HandlerManager) Wait() {
 	hm.wg.Wait()
+	if batchHandler, ok := hm.handler.(*BatchHTTPHandler); ok {
+		batchHandler.Stop()
+	}
 }
 
 // GetHandler 获取处理器实例
@@ -335,6 +468,23 @@ func CreateHandler(handlerConfig filter.HandlerConfig) (LogHandler, error) {
 		if handlerConfig.APIURL == "" {
 			return nil, fmt.Errorf("使用HTTP处理器时必须在配置文件中配置 api_url")
 		}
+		// 默认使用批量上报以支撑高吞吐（每日上亿级），batch_enabled: false 可切换回逐条
+		useBatch := handlerConfig.BatchEnabled == nil || *handlerConfig.BatchEnabled
+		if useBatch {
+			batchSize := handlerConfig.BatchSize
+			if batchSize <= 0 {
+				batchSize = 100
+			}
+			flushInterval := time.Second
+			if handlerConfig.BatchInterval != "" {
+				if d, err := time.ParseDuration(handlerConfig.BatchInterval); err == nil {
+					flushInterval = d
+				}
+			}
+			log.Printf("使用HTTP批量上报处理器，API: %s/batch，批量大小: %d，刷新间隔: %v\n", handlerConfig.APIURL, batchSize, flushInterval)
+			return NewBatchHTTPHandler(handlerConfig.APIURL, timeout, batchSize, flushInterval), nil
+		}
+		// batch_enabled: false 时使用逐条上报
 		log.Printf("使用HTTP上报处理器，API地址: %s，超时时间: %v\n", handlerConfig.APIURL, timeout)
 		return NewHTTPHandler(handlerConfig.APIURL, timeout), nil
 	default:

@@ -8,6 +8,10 @@ handler:
   # 若 log-manager 部署在远程，改为实际地址，如 http://your-server:8080
   api_url: http://host.docker.internal:8080/api/v1/logs
   timeout: 10s
+  # 批量上报（默认启用，支撑亿级吞吐）
+  batch_size: 100
+  batch_interval: 1s
+  # worker_num: 8  # 高吞吐场景可调大，默认 4
 
 metrics:
   enabled: true
