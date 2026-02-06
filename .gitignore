@@ -1,0 +1,20 @@
+# Binary
+log-filter-monitor
+log-filter-monitor-*
+
+# Config with secrets
+config.yaml
+
+# Go
+*.exe
+*.test
+*.out
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
