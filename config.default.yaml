@@ -1,0 +1,36 @@
+# log-filter-monitor 默认配置（Docker 安装模板）
+# 配置文件位置：~/.log-agent/config.yaml
+# 请根据实际情况修改 api_url 和 log_file 路径
+
+handler:
+  type: http
+  # 容器内访问宿主机服务：使用 host.docker.internal（需 --add-host）
+  # 若 log-manager 部署在远程，改为实际地址，如 http://your-server:8080
+  api_url: http://host.docker.internal:8080/api/v1/logs
+  timeout: 10s
+
+metrics:
+  enabled: true
+  interval: 1m
+  api_url: http://host.docker.internal:8080/api/v1/metrics
+  timeout: 10s
+
+# log_file 路径说明：容器内路径需对应挂载的宿主机目录
+# - /var/log/xxx 对应宿主机 /var/log（默认挂载）
+# - /etc/log-agent/logs/xxx 对应宿主机 ~/.log-agent/logs（默认挂载）
+rules:
+  - name: "错误日志"
+    pattern: "ERROR|FATAL|CRITICAL|Exception"
+    description: "匹配包含错误、致命错误、严重错误或异常的日志"
+    log_file: /etc/log-agent/logs/app.log
+    tag: error
+    metrics_enable: true
+    report_mode: full
+
+  - name: "警告日志"
+    pattern: "WARN|WARNING"
+    description: "匹配包含警告信息的日志"
+    log_file: /etc/log-agent/logs/app.log
+    tag: warning
+    metrics_enable: true
+    report_mode: full

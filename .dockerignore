@@ -1,0 +1,18 @@
+# 构建产物
+log-filter-monitor
+
+# 测试和文档
+*.log
+*_test.go
+*.md
+test.log
+
+# 版本控制
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo

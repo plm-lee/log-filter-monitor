@@ -27,6 +27,13 @@ type Rule struct {
 	LogFile       string `yaml:"log_file"`       // 要监控的日志文件路径（可选，如果未设置则使用全局文件）
 	Tag           string `yaml:"tag"`            // 标签，用于标识该规则（可选，会在打印和上报时带上）
 	MetricsEnable *bool  `yaml:"metrics_enable"` // 是否启用指标统计（指针类型，nil表示使用全局配置，true/false表示显式设置）
+	ReportMode    string `yaml:"report_mode"`    // 上报模式：full（完整日志）或 metrics_only（只上报指标，不上报完整日志）
+}
+
+// IsReportModeMetricsOnly 检查是否为仅指标上报模式
+// 返回: 若 report_mode 为 metrics_only 则 true，否则 false
+func (r *Rule) IsReportModeMetricsOnly() bool {
+	return r.ReportMode == ReportModeMetricsOnly
 }
 
 // IsMetricsEnabled 检查是否启用指标统计
