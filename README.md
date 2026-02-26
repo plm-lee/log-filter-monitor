@@ -24,9 +24,23 @@
 
 ## 安装
 
-### 前置要求
+### 一键安装（推荐）
 
-- Go 1.23 或更高版本
+```bash
+curl -fsSL https://raw.githubusercontent.com/plm-lee/log-filter-monitor/main/install.sh | sh
+```
+
+安装后编辑 `~/.log-agent/config.yaml`，设置 `api_url` 和 `rules` 中的 `log_file`，然后运行：
+
+```bash
+log-filter-monitor -config ~/.log-agent/config.yaml
+```
+
+指定版本安装：`VERSION=v1.0.0 curl -fsSL ... | sh`
+
+### 前置要求（从源码编译）
+
+- Go 1.24 或更高版本
 
 ### 安装依赖
 

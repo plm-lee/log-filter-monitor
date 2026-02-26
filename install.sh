@@ -44,13 +44,13 @@ create_default_config() {
 
 handler:
   type: http
-  api_url: http://localhost:8080/api/v1/logs
+  api_url: http://localhost:8888/log/manager/api/v1/logs
   timeout: 10s
 
 metrics:
   enabled: true
   interval: 1m
-  api_url: http://localhost:8080/api/v1/metrics
+  api_url: http://localhost:8888/log/manager/api/v1/metrics
   timeout: 10s
 
 rules:
