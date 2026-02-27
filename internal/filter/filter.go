@@ -66,17 +66,21 @@ type CheckpointConfig struct {
 // HandlerConfig 处理器配置结构体
 // 定义日志处理器的配置信息
 type HandlerConfig struct {
-	Type           string `yaml:"type"`            // 处理器类型：console、http 或 udp
-	APIURL         string `yaml:"api_url"`         // HTTP上报接口地址（当type为http时必需）
-	Timeout        string `yaml:"timeout"`         // HTTP请求超时时间（可选，默认：10s）
-	BatchEnabled   *bool  `yaml:"batch_enabled"`   // 是否启用批量上报（nil/true=启用，false=逐条，默认启用以支撑高吞吐）
-	BatchSize       int    `yaml:"batch_size"`       // 每批条数（可选，默认：100，最大100）
-	BatchInterval   string `yaml:"batch_interval"`   // 批量刷新间隔（可选，默认：1s）
-	RetryCount      int    `yaml:"retry_count"`      // 失败重试次数（可选，默认：3）
-	RetryBaseDelay  string `yaml:"retry_base_delay"` // 重试基础延迟（可选，默认：1s）
-	WorkerNum      int    `yaml:"worker_num"`      // handler worker 数量（0=默认4，高吞吐场景可调大）
-	UDPAddr        string `yaml:"udp_addr"`        // UDP 目标地址（当type为udp时必需，格式：host:port）
-	UDPSecret      string `yaml:"udp_secret"`      // UDP 认证密钥（可选，与 log-manager udp.secret 一致时做校验）
+	Type            string `yaml:"type"`              // 处理器类型：console、http、udp 或 tcp
+	APIURL          string `yaml:"api_url"`           // HTTP上报接口地址（当type为http时必需）
+	Timeout         string `yaml:"timeout"`           // HTTP请求超时时间（可选，默认：10s）
+	BatchEnabled    *bool  `yaml:"batch_enabled"`     // 是否启用批量上报（nil/true=启用，false=逐条，默认启用以支撑高吞吐）
+	BatchSize       int    `yaml:"batch_size"`        // 每批条数（可选，默认：100，最大100）
+	BatchInterval   string `yaml:"batch_interval"`    // 批量刷新间隔（可选，默认：1s）
+	RetryCount      int    `yaml:"retry_count"`       // 失败重试次数（可选，默认：3）
+	RetryBaseDelay  string `yaml:"retry_base_delay"`  // 重试基础延迟（可选，默认：1s）
+	WorkerNum       int    `yaml:"worker_num"`        // handler worker 数量（0=默认4，高吞吐场景可调大）
+	UDPAddr         string `yaml:"udp_addr"`          // UDP 目标地址（当type为udp时必需，格式：host:port）
+	UDPSecret       string `yaml:"udp_secret"`        // UDP 认证密钥（可选，与 log-manager udp.secret 一致时做校验）
+	TCPAddr         string `yaml:"tcp_addr"`          // TCP 目标地址（当type为tcp时必需，格式：host:port）
+	TCPSecret       string `yaml:"tcp_secret"`        // TCP 认证密钥（可选，与 log-manager tcp.secret 一致时做校验）
+	TCPBatchSize    int    `yaml:"tcp_batch_size"`    // TCP 批量条数（可选，默认：50）
+	TCPFlushInterval string `yaml:"tcp_flush_interval"` // TCP 批量刷新间隔（可选，默认：1s）
 }
 
 // MetricsConfig 指标统计配置结构体
@@ -372,11 +376,14 @@ func LoadConfig(configPath string) (*Config, error) {
 		}
 	}
 
-	// 验证处理器配置
+	// 验证处理器配置（默认 tcp 长连接，可靠+高性能）
 	if config.Handler.Type == "" {
-		// 如果没有配置，默认为 console
-		config.Handler.Type = "console"
-		log.Println("未配置处理器类型，使用默认值：console")
+		config.Handler.Type = "tcp"
+		log.Println("未配置处理器类型，使用默认值：tcp（TCP 长连接）")
+	}
+	if config.Handler.Type == "tcp" && config.Handler.TCPAddr == "" {
+		config.Handler.TCPAddr = "127.0.0.1:8890"
+		log.Println("未配置 tcp_addr，使用默认值：127.0.0.1:8890")
 	}
 
 	// 如果使用 HTTP 处理器，验证 API 地址

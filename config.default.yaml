@@ -3,15 +3,31 @@
 # 请根据实际情况修改 api_url 和 log_file 路径
 
 handler:
-  type: http
-  # 容器内访问宿主机服务：使用 host.docker.internal（需 --add-host）
-  # 若 log-manager 部署在远程，改为实际地址，如 http://your-server:8080
-  api_url: http://host.docker.internal:8080/api/v1/logs
-  timeout: 10s
-  # 批量上报（默认启用，支撑亿级吞吐）
-  batch_size: 100
-  batch_interval: 1s
-  # worker_num: 8  # 高吞吐场景可调大，默认 4
+  # 处理器类型：tcp（默认，长连接可靠+高性能）| console | http | udp
+  type: tcp
+  # type=tcp 时使用（默认）：
+  tcp_addr: "host.docker.internal:8890"
+  tcp_batch_size: 200
+  tcp_flush_interval: 200ms
+  # type=http 时使用：
+  # api_url: http://host.docker.internal:8080/api/v1/logs
+  # batch_size: 100
+  # batch_interval: 1s
+  # type=udp 时使用：
+  # udp_addr: "host.docker.internal:8889"
+
+# 断点续传（仅 HTTP 批量模式有效，ACK 后保存偏移，重启从断点继续）
+# checkpoint:
+#   enabled: true
+#   path: ""  # 默认 ~/.log-agent/checkpoint.json
+
+# 配置拉取（从 Manager 定时拉取并热更新规则）
+# config_pull:
+#   enabled: true
+#   url: http://host.docker.internal:8080/log/manager/api/v1/agent/config
+#   interval: 30s
+#   agent_id: default
+#   api_key: ""  # 与 Manager api_key 一致时做认证
 
 metrics:
   enabled: true

@@ -484,6 +484,9 @@ func (hm *HandlerManager) Wait() {
 	if udpHandler, ok := hm.handler.(*UDPHandler); ok {
 		udpHandler.Close()
 	}
+	if tcpHandler, ok := hm.handler.(*TCPHandler); ok {
+		tcpHandler.Close()
+	}
 }
 
 // GetHandler 获取处理器实例
@@ -522,6 +525,23 @@ func CreateHandler(handlerConfig filter.HandlerConfig, checkpoint CheckpointSave
 		}
 		log.Printf("使用UDP上报处理器，目标: %s\n", handlerConfig.UDPAddr)
 		return udpHandler, nil
+	case "tcp":
+		if handlerConfig.TCPAddr == "" {
+			return nil, fmt.Errorf("使用TCP处理器时必须在配置文件中配置 tcp_addr")
+		}
+		batchSize := handlerConfig.TCPBatchSize
+		if batchSize <= 0 {
+			batchSize = 200 // 性能优化默认值
+		}
+		flushInterval := 200 * time.Millisecond // 性能优化默认值
+		if handlerConfig.TCPFlushInterval != "" {
+			if d, err := time.ParseDuration(handlerConfig.TCPFlushInterval); err == nil {
+				flushInterval = d
+			}
+		}
+		tcpHandler := NewTCPHandler(handlerConfig.TCPAddr, handlerConfig.TCPSecret, batchSize, flushInterval)
+		log.Printf("使用TCP长连接上报处理器，目标: %s，批量: %d，刷新: %v\n", handlerConfig.TCPAddr, batchSize, flushInterval)
+		return tcpHandler, nil
 	case "http":
 		if handlerConfig.APIURL == "" {
 			return nil, fmt.Errorf("使用HTTP处理器时必须在配置文件中配置 api_url")
@@ -556,7 +576,7 @@ func CreateHandler(handlerConfig filter.HandlerConfig, checkpoint CheckpointSave
 		log.Printf("使用HTTP上报处理器，API地址: %s，超时时间: %v\n", handlerConfig.APIURL, timeout)
 		return NewHTTPHandler(handlerConfig.APIURL, timeout), nil
 	default:
-		return nil, fmt.Errorf("不支持的处理器类型 '%s'，支持的类型：console, http, udp", handlerConfig.Type)
+		return nil, fmt.Errorf("不支持的处理器类型 '%s'，支持的类型：console, http, udp, tcp", handlerConfig.Type)
 	}
 }
 
