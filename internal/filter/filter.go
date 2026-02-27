@@ -54,6 +54,13 @@ type MatchResult struct {
 	LogLine string // 匹配的日志行内容
 	LogFile string // 日志文件路径
 	Tag     string // 标签
+	Offset  int64  // 文件内字节偏移（用于断点续传）
+}
+
+// CheckpointConfig 断点续传配置
+type CheckpointConfig struct {
+	Enabled bool   `yaml:"enabled"` // 是否启用断点续传（仅 HTTP 批量模式有效）
+	Path    string `yaml:"path"`    // 检查点文件路径，默认 ~/.log-agent/checkpoint.json
 }
 
 // HandlerConfig 处理器配置结构体
@@ -63,8 +70,10 @@ type HandlerConfig struct {
 	APIURL         string `yaml:"api_url"`         // HTTP上报接口地址（当type为http时必需）
 	Timeout        string `yaml:"timeout"`         // HTTP请求超时时间（可选，默认：10s）
 	BatchEnabled   *bool  `yaml:"batch_enabled"`   // 是否启用批量上报（nil/true=启用，false=逐条，默认启用以支撑高吞吐）
-	BatchSize      int    `yaml:"batch_size"`      // 每批条数（可选，默认：100，最大100）
-	BatchInterval  string `yaml:"batch_interval"`  // 批量刷新间隔（可选，默认：1s）
+	BatchSize       int    `yaml:"batch_size"`       // 每批条数（可选，默认：100，最大100）
+	BatchInterval   string `yaml:"batch_interval"`   // 批量刷新间隔（可选，默认：1s）
+	RetryCount      int    `yaml:"retry_count"`      // 失败重试次数（可选，默认：3）
+	RetryBaseDelay  string `yaml:"retry_base_delay"` // 重试基础延迟（可选，默认：1s）
 	WorkerNum      int    `yaml:"worker_num"`      // handler worker 数量（0=默认4，高吞吐场景可调大）
 	UDPAddr        string `yaml:"udp_addr"`        // UDP 目标地址（当type为udp时必需，格式：host:port）
 	UDPSecret      string `yaml:"udp_secret"`      // UDP 认证密钥（可选，与 log-manager udp.secret 一致时做校验）
@@ -79,12 +88,23 @@ type MetricsConfig struct {
 	Timeout  string `yaml:"timeout"`  // HTTP请求超时时间（可选，默认：10s）
 }
 
+// ConfigPullConfig 配置拉取配置（从 Manager 定时拉取并热更新规则）
+type ConfigPullConfig struct {
+	Enabled  bool   `yaml:"enabled"`   // 是否启用配置拉取
+	URL      string `yaml:"url"`       // 拉取地址，如 http://manager/log/manager/api/v1/agent/config
+	Interval string `yaml:"interval"`  // 拉取间隔，如 30s
+	AgentID  string `yaml:"agent_id"`  // agent_id 参数，默认 default
+	APIKey   string `yaml:"api_key"`   // 可选，与 Manager api_key 一致时做认证
+}
+
 // Config 配置文件结构体
 // 包含所有配置信息
 type Config struct {
-	Rules   []Rule        `yaml:"rules"`   // 规则列表
-	Handler HandlerConfig `yaml:"handler"` // 处理器配置
-	Metrics MetricsConfig `yaml:"metrics"` // 指标统计配置
+	Rules      []Rule           `yaml:"rules"`       // 规则列表
+	Handler    HandlerConfig    `yaml:"handler"`     // 处理器配置
+	Metrics    MetricsConfig    `yaml:"metrics"`     // 指标统计配置
+	Checkpoint CheckpointConfig `yaml:"checkpoint"`  // 断点续传配置
+	ConfigPull ConfigPullConfig `yaml:"config_pull"` // 配置拉取（热更新规则）
 }
 
 // ruleSnapshot 规则快照结构
@@ -153,9 +173,10 @@ func (lf *LogFilter) Match(logLine string, logFile string) []MatchResult {
 			rule := snapshot.rules[i]
 			results = append(results, MatchResult{
 				Rule:    rule,
-				LogLine: logLine, // 注意：这里字符串会被共享，但如果需要修改应该拷贝
+				LogLine: logLine,
 				LogFile: logFile,
 				Tag:     rule.Tag,
+				Offset:  0,
 			})
 		}
 	}
@@ -197,10 +218,16 @@ func (fm *FilterManager) Wait() {
 	fm.wg.Wait()
 }
 
+// UpdateRules 热更新规则（供配置拉取使用）
+func (fm *FilterManager) UpdateRules(rules []Rule) error {
+	return fm.filter.UpdateRules(rules)
+}
+
 // LogLineWithFile 带文件信息的日志行
 type LogLineWithFile struct {
 	LogLine string // 日志行内容
 	LogFile string // 日志文件路径
+	Offset  int64  // 文件内字节偏移（用于断点续传）
 }
 
 // filter 过滤日志通道，将匹配的日志发送到结果通道（内部方法）
@@ -220,7 +247,9 @@ func (lf *LogFilter) filter(logChan <-chan LogLineWithFile, resultChan chan<- Ma
 
 			// 检查日志行是否匹配规则
 			results := lf.Match(logLineWithFile.LogLine, logLineWithFile.LogFile)
-			// 直接发送所有匹配结果，通道缓冲已经足够大，减少延迟
+			for i := range results {
+				results[i].Offset = logLineWithFile.Offset
+			}
 			for _, result := range results {
 				select {
 				case resultChan <- result:

@@ -8,25 +8,30 @@ import (
 	"log-filter-monitor/internal/filter"
 )
 
+// CheckpointGetter 获取文件检查点偏移量（nil 表示不使用断点续传）
+type CheckpointGetter interface {
+	Get(filePath string) (offset int64, ok bool)
+}
+
 // MultiMonitor 多文件监控管理器
 // 负责管理多个日志文件的监控
 type MultiMonitor struct {
-	monitors map[string]*LogMonitor // 文件路径 -> 监控器映射
-	wg       sync.WaitGroup         // 等待组
-	outputChan chan filter.LogLineWithFile // 统一输出通道
-	stopChan  chan struct{}         // 停止信号通道
+	monitors   map[string]*LogMonitor        // 文件路径 -> 监控器映射
+	wg         sync.WaitGroup                // 等待组
+	outputChan chan filter.LogLineWithFile   // 统一输出通道
+	stopChan   chan struct{}                 // 停止信号通道
+	checkpoint CheckpointGetter              // 检查点（可选，用于断点续传）
 }
 
 // NewMultiMonitor 创建多文件监控管理器
-// 返回: MultiMonitor实例
-func NewMultiMonitor() *MultiMonitor {
-	// 增加通道缓冲大小，提高并发性能
-	const outputChanSize = 500 // 输出通道缓冲大小（增加到500）
-	
+// checkpoint: 可选，用于断点续传；nil 时每次从文件末尾开始
+func NewMultiMonitor(checkpoint CheckpointGetter) *MultiMonitor {
+	const outputChanSize = 500
 	return &MultiMonitor{
 		monitors:   make(map[string]*LogMonitor),
 		outputChan: make(chan filter.LogLineWithFile, outputChanSize),
 		stopChan:   make(chan struct{}),
+		checkpoint: checkpoint,
 	}
 }
 
@@ -34,13 +39,17 @@ func NewMultiMonitor() *MultiMonitor {
 // filePath: 要监控的文件路径
 // 返回: 错误信息（如果有）
 func (mm *MultiMonitor) AddMonitor(filePath string) error {
-	// 如果已经存在该文件的监控器，跳过
 	if _, exists := mm.monitors[filePath]; exists {
 		log.Printf("警告：文件 %s 已经在监控中，跳过\n", filePath)
 		return nil
 	}
-
-	monitor := NewLogMonitor(filePath)
+	initialOffset := int64(-1)
+	if mm.checkpoint != nil {
+		if off, ok := mm.checkpoint.Get(filePath); ok {
+			initialOffset = off
+		}
+	}
+	monitor := NewLogMonitor(filePath, initialOffset)
 	if err := monitor.Start(); err != nil {
 		return fmt.Errorf("启动监控文件 %s 失败: %w", filePath, err)
 	}
@@ -65,17 +74,15 @@ func (mm *MultiMonitor) forwardLogs(monitor *LogMonitor, filePath string) {
 		select {
 		case <-mm.stopChan:
 			return
-		case logLine, ok := <-monitor.LogChan:
+		case item, ok := <-monitor.LogChan:
 			if !ok {
-				// 通道已关闭
 				return
 			}
-
-			// 发送带文件信息的日志行
 			select {
 			case mm.outputChan <- filter.LogLineWithFile{
-				LogLine: logLine,
+				LogLine: item.Text,
 				LogFile: filePath,
+				Offset:  item.Offset,
 			}:
 			case <-mm.stopChan:
 				return

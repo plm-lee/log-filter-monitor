@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"log-filter-monitor/internal/checkpoint"
+	"log-filter-monitor/internal/configpull"
 	"log-filter-monitor/internal/filter"
 	"log-filter-monitor/internal/handler"
 	"log-filter-monitor/internal/metrics"
@@ -18,6 +21,8 @@ import (
 // 负责管理整个应用的初始化、启动和关闭
 type App struct {
 	cfg            *filter.Config
+	checkpoint     *checkpoint.Store
+	configFetcher  *configpull.Fetcher
 	multiMonitor   *monitor.MultiMonitor
 	filterManager  *filter.FilterManager
 	handlerManager *handler.HandlerManager
@@ -47,12 +52,30 @@ func NewApp() *App {
 // logFile: 全局日志文件路径（可选）
 // 返回: 错误信息（如果有）
 func (a *App) InitAll(configFile string, logFile string) error {
-	// 加载配置
 	cfg, err := filter.LoadConfig(configFile)
 	if err != nil {
 		return fmt.Errorf("加载配置文件失败: %w", err)
 	}
 	a.cfg = cfg
+
+	if cfg.Checkpoint.Enabled {
+		cp, err := checkpoint.NewStore(cfg.Checkpoint.Path)
+		if err != nil {
+			return fmt.Errorf("初始化检查点失败: %w", err)
+		}
+		a.checkpoint = cp
+		log.Println("已启用断点续传")
+	}
+	if cfg.ConfigPull.Enabled && cfg.ConfigPull.URL != "" {
+		interval := 30 * time.Second
+		if cfg.ConfigPull.Interval != "" {
+			if d, err := time.ParseDuration(cfg.ConfigPull.Interval); err == nil {
+				interval = d
+			}
+		}
+		a.configFetcher = configpull.NewFetcher(cfg.ConfigPull.URL, cfg.ConfigPull.AgentID, cfg.ConfigPull.APIKey, interval)
+		log.Printf("已启用配置拉取，URL: %s，间隔: %v\n", cfg.ConfigPull.URL, interval)
+	}
 
 	// 初始化监控模块
 	if err := a.initMonitor(logFile); err != nil {
@@ -80,7 +103,11 @@ func (a *App) InitAll(configFile string, logFile string) error {
 
 // initMonitor 初始化监控模块
 func (a *App) initMonitor(globalLogFile string) error {
-	a.multiMonitor = monitor.NewMultiMonitor()
+	var cp monitor.CheckpointGetter
+	if a.checkpoint != nil {
+		cp = a.checkpoint
+	}
+	a.multiMonitor = monitor.NewMultiMonitor(cp)
 
 	// 确定需要监控的文件
 	monitoredFiles := make(map[string]bool) // 用于去重
@@ -128,7 +155,14 @@ func (a *App) initFilter() error {
 
 // initHandler 初始化处理模块
 func (a *App) initHandler() error {
-	logHandler, err := handler.CreateHandler(a.cfg.Handler)
+	var cp handler.CheckpointSaver
+	if a.checkpoint != nil && a.cfg.Handler.Type == "http" {
+		useBatch := a.cfg.Handler.BatchEnabled == nil || *a.cfg.Handler.BatchEnabled
+		if useBatch {
+			cp = a.checkpoint
+		}
+	}
+	logHandler, err := handler.CreateHandler(a.cfg.Handler, cp)
 	if err != nil {
 		return err
 	}
@@ -166,7 +200,11 @@ func (a *App) Start() {
 
 	// 启动日志处理
 	a.handlerManager.Start(a.resultChan, a.stopChan)
-
+	if a.configFetcher != nil && a.filterManager != nil {
+		a.configFetcher.Start(func(rules []filter.Rule) error {
+			return a.filterManager.UpdateRules(rules)
+		})
+	}
 	log.Println("日志过滤监控系统已启动")
 }
 
@@ -183,7 +221,9 @@ func (a *App) Stop() {
 
 	// 关闭停止信号通道，通知所有goroutine退出
 	close(a.stopChan)
-
+	if a.configFetcher != nil {
+		a.configFetcher.Stop()
+	}
 	// 停止各个模块
 	a.multiMonitor.Stop()
 	a.filterManager.Wait()
