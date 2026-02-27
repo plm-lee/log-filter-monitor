@@ -225,6 +225,9 @@ func (a *App) printFinalStats() {
 		} else if batchHandler, ok := logHandler.(*handler.BatchHTTPHandler); ok {
 			success, failed := batchHandler.GetStats()
 			log.Printf("HTTP批量上报统计 - 成功: %d, 失败: %d\n", success, failed)
+		} else if udpHandler, ok := logHandler.(*handler.UDPHandler); ok {
+			success, failed := udpHandler.GetStats()
+			log.Printf("UDP上报统计 - 成功: %d, 失败: %d\n", success, failed)
 		}
 	}
 }

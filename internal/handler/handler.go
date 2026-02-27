@@ -430,11 +430,14 @@ func (hm *HandlerManager) process(resultChan <-chan filter.MatchResult, stopChan
 	}
 }
 
-// Wait 等待处理器完成，并停止可停止的处理器（如 BatchHTTPHandler）
+// Wait 等待处理器完成，并停止可停止的处理器（如 BatchHTTPHandler、UDPHandler）
 func (hm *HandlerManager) Wait() {
 	hm.wg.Wait()
 	if batchHandler, ok := hm.handler.(*BatchHTTPHandler); ok {
 		batchHandler.Stop()
+	}
+	if udpHandler, ok := hm.handler.(*UDPHandler); ok {
+		udpHandler.Close()
 	}
 }
 
@@ -464,6 +467,16 @@ func CreateHandler(handlerConfig filter.HandlerConfig) (LogHandler, error) {
 	case "console":
 		log.Println("使用控制台输出处理器")
 		return NewConsoleHandler(), nil
+	case "udp":
+		if handlerConfig.UDPAddr == "" {
+			return nil, fmt.Errorf("使用UDP处理器时必须在配置文件中配置 udp_addr")
+		}
+		udpHandler, err := NewUDPHandler(handlerConfig.UDPAddr, handlerConfig.UDPSecret)
+		if err != nil {
+			return nil, fmt.Errorf("创建UDP处理器失败: %w", err)
+		}
+		log.Printf("使用UDP上报处理器，目标: %s\n", handlerConfig.UDPAddr)
+		return udpHandler, nil
 	case "http":
 		if handlerConfig.APIURL == "" {
 			return nil, fmt.Errorf("使用HTTP处理器时必须在配置文件中配置 api_url")
@@ -488,7 +501,7 @@ func CreateHandler(handlerConfig filter.HandlerConfig) (LogHandler, error) {
 		log.Printf("使用HTTP上报处理器，API地址: %s，超时时间: %v\n", handlerConfig.APIURL, timeout)
 		return NewHTTPHandler(handlerConfig.APIURL, timeout), nil
 	default:
-		return nil, fmt.Errorf("不支持的处理器类型 '%s'，支持的类型：console, http", handlerConfig.Type)
+		return nil, fmt.Errorf("不支持的处理器类型 '%s'，支持的类型：console, http, udp", handlerConfig.Type)
 	}
 }
 
