@@ -9,7 +9,7 @@
 - ✅ **规则过滤**：支持通过正则表达式定义多条过滤规则
 - ✅ **灵活配置**：通过 YAML 配置文件管理过滤规则
 - ✅ **模块化设计**：监控、过滤、处理三个模块独立，职责清晰
-- ✅ **多种处理方式**：支持控制台输出和 HTTP 接口上报
+- ✅ **多种处理方式**：支持控制台输出、HTTP、UDP、**TCP 长连接（默认，推荐）**
 - ✅ **指标统计**：每分钟自动统计匹配日志数量（参考 falcon-log-agent）
 - ✅ **优雅退出**：支持 Ctrl+C 优雅退出
 
@@ -19,7 +19,7 @@
 
 1. **监控模块（monitor）**：负责读取日志文件，通过 channel 发送日志行
 2. **过滤模块（filter）**：负责根据规则匹配日志，通过 channel 发送匹配结果
-3. **处理模块（handler）**：负责处理匹配到的日志，支持控制台输出和 HTTP 上报
+3. **处理模块（handler）**：负责处理匹配到的日志，支持控制台输出、TCP 长连接、UDP、HTTP 上报
 4. **指标模块（metrics）**：负责统计匹配日志数量，定期输出统计信息（参考 falcon-log-agent）
 
 ## 安装
@@ -30,7 +30,7 @@
 curl -fsSL https://raw.githubusercontent.com/plm-lee/log-filter-monitor/main/install.sh | sh
 ```
 
-安装后编辑 `~/.log-agent/config.yaml`，设置 `api_url` 和 `rules` 中的 `log_file`，然后运行：
+安装后编辑 `~/.log-agent/config.yaml`，设置 `tcp_addr`（或 `api_url` / `udp_addr`）和 `rules` 中的 `log_file`，然后运行：
 
 ```bash
 log-filter-monitor -config ~/.log-agent/config.yaml
@@ -88,9 +88,18 @@ go build -o log-filter-monitor
 ```yaml
 # 处理器配置
 handler:
-  type: console # 处理器类型：console（控制台输出）或 http（HTTP上报）
-  api_url: "" # HTTP上报接口地址（当type为http时必需）
-  timeout: "10s" # HTTP请求超时时间（可选，默认：10s，支持单位：s、m、h）
+  type: tcp # 处理器类型：console | http | udp | tcp（默认，TCP 长连接，可靠+高性能）
+  # type=tcp 时：
+  tcp_addr: "127.0.0.1:8890"
+  tcp_secret: ""
+  tcp_batch_size: 200
+  tcp_flush_interval: 200ms
+  # type=udp 时：
+  # udp_addr: "127.0.0.1:8889"
+  # udp_secret: ""
+  # type=http 时：
+  # api_url: ""
+  # timeout: "10s"
 
 # 过滤规则配置
 rules:
@@ -106,7 +115,32 @@ rules:
 
 ### 配置示例
 
-#### 使用控制台输出（默认）
+#### 使用 TCP 长连接（默认，推荐）
+
+```yaml
+# 处理器配置
+handler:
+  type: tcp
+  tcp_addr: "127.0.0.1:8890"
+  tcp_batch_size: 200
+  tcp_flush_interval: 200ms
+
+# 指标统计配置
+metrics:
+  enabled: true
+  interval: 1m
+
+# 过滤规则
+rules:
+  - name: "错误日志"
+    pattern: "ERROR|FATAL|CRITICAL|Exception"
+    description: "匹配包含错误、致命错误、严重错误或异常的日志"
+  - name: "警告日志"
+    pattern: "WARN|WARNING"
+    description: "匹配包含警告信息的日志"
+```
+
+#### 使用控制台输出
 
 ```yaml
 # 处理器配置
@@ -271,6 +305,8 @@ logFilter.Filter(logChan, resultChan, stopChan)
 支持多种处理器：
 
 - `ConsoleHandler`：控制台输出
+- `TCPHandler`：TCP 长连接上报（默认推荐，可靠+高性能）
+- `UDPHandler`：UDP 上报（可接受少量丢包）
 - `HTTPHandler`：HTTP 接口上报
 - `MultiHandler`：组合多个处理器
 
@@ -302,15 +338,23 @@ metricsCollector.Start(metrics.LogOutputFunc)
 metricsCollector.IncrementByMatchResult(matchResult)
 ```
 
-### 配置 HTTP 上报
+### 配置上报方式
 
-编辑 `config.yaml` 文件，修改 handler 配置：
+编辑 `config.yaml` 文件，修改 handler 配置。默认推荐 TCP 长连接：
 
 ```yaml
+# TCP 长连接（默认推荐）
 handler:
-  type: http
-  api_url: http://your-api-endpoint.com/logs
-  timeout: 30s
+  type: tcp
+  tcp_addr: "manager-host:8890"
+  tcp_batch_size: 200
+  tcp_flush_interval: 200ms
+
+# 或 HTTP 上报
+# handler:
+#   type: http
+#   api_url: http://your-api-endpoint.com/logs
+#   timeout: 30s
 ```
 
 ### 添加新的过滤规则
