@@ -62,12 +62,13 @@ func (h *ConsoleHandler) Handle(matchResult filter.MatchResult) error {
 // HTTPHandler HTTP接口上报处理器
 // 将匹配的日志通过HTTP接口上报
 type HTTPHandler struct {
-	apiURL  string        // API接口地址
-	client  HTTPClient    // HTTP客户端接口
-	timeout time.Duration // 请求超时时间
-	mu      sync.Mutex    // 保护统计信息的互斥锁
-	success int64         // 成功上报次数
-	failed  int64         // 失败上报次数
+	apiURL         string               // API接口地址
+	client         HTTPClient           // HTTP客户端接口
+	timeout        time.Duration        // 请求超时时间
+	mu             sync.Mutex           // 保护统计信息的互斥锁
+	success        int64                // 成功上报次数
+	failed         int64                // 失败上报次数
+	reportRecorder ReportStatsRecorder  // 可选，用于统计上报耗时和数量
 }
 
 // HTTPClient HTTP客户端接口
@@ -137,12 +138,14 @@ func (c *defaultHTTPClient) Post(url string, data interface{}) error {
 // NewHTTPHandler 创建HTTP接口上报处理器
 // apiURL: API接口地址
 // timeout: 请求超时时间
+// reportRecorder: 可选，用于统计上报耗时和数量
 // 返回: HTTPHandler实例
-func NewHTTPHandler(apiURL string, timeout time.Duration) *HTTPHandler {
+func NewHTTPHandler(apiURL string, timeout time.Duration, reportRecorder ReportStatsRecorder) *HTTPHandler {
 	return &HTTPHandler{
-		apiURL:  apiURL,
-		client:  NewDefaultHTTPClient(timeout),
-		timeout: timeout,
+		apiURL:         apiURL,
+		client:         NewDefaultHTTPClient(timeout),
+		timeout:        timeout,
+		reportRecorder: reportRecorder,
 	}
 }
 
@@ -150,12 +153,14 @@ func NewHTTPHandler(apiURL string, timeout time.Duration) *HTTPHandler {
 // apiURL: API接口地址
 // timeout: 请求超时时间
 // client: HTTP客户端
+// reportRecorder: 可选，用于统计上报耗时和数量
 // 返回: HTTPHandler实例
-func NewHTTPHandlerWithClient(apiURL string, timeout time.Duration, client HTTPClient) *HTTPHandler {
+func NewHTTPHandlerWithClient(apiURL string, timeout time.Duration, client HTTPClient, reportRecorder ReportStatsRecorder) *HTTPHandler {
 	return &HTTPHandler{
-		apiURL:  apiURL,
-		client:  client,
-		timeout: timeout,
+		apiURL:         apiURL,
+		client:         client,
+		timeout:        timeout,
+		reportRecorder: reportRecorder,
 	}
 }
 
@@ -179,6 +184,7 @@ func (h *HTTPHandler) Handle(matchResult filter.MatchResult) error {
 	}
 
 	// 发送HTTP请求
+	start := time.Now()
 	err := h.client.Post(h.apiURL, data)
 	if err != nil {
 		atomic.AddInt64(&h.failed, 1)
@@ -187,6 +193,9 @@ func (h *HTTPHandler) Handle(matchResult filter.MatchResult) error {
 	}
 
 	atomic.AddInt64(&h.success, 1)
+	if h.reportRecorder != nil {
+		h.reportRecorder.RecordReport(time.Since(start), 1)
+	}
 	return nil
 }
 
@@ -204,28 +213,30 @@ type CheckpointSaver interface {
 // BatchHTTPHandler 批量HTTP上报处理器
 // 缓冲匹配结果，按条数或定时批量发送到 POST /api/v1/logs/batch
 type BatchHTTPHandler struct {
-	apiURL        string
-	batchURL      string
-	client        HTTPClient
-	timeout       time.Duration
-	batchSize     int
-	flushInterval time.Duration
-	retryCount    int           // 失败重试次数
-	retryDelay    time.Duration // 重试基础延迟（指数退避）
-	buffer        []filter.MatchResult
-	mu            sync.Mutex
-	success       int64
-	failed        int64
-	stopChan      chan struct{}
-	wg            sync.WaitGroup
-	checkpoint    CheckpointSaver
+	apiURL         string
+	batchURL       string
+	client         HTTPClient
+	timeout        time.Duration
+	batchSize      int
+	flushInterval  time.Duration
+	retryCount     int           // 失败重试次数
+	retryDelay     time.Duration // 重试基础延迟（指数退避）
+	buffer         []filter.MatchResult
+	mu             sync.Mutex
+	success        int64
+	failed         int64
+	stopChan       chan struct{}
+	wg             sync.WaitGroup
+	checkpoint     CheckpointSaver
+	reportRecorder ReportStatsRecorder
 }
 
 // NewBatchHTTPHandler 创建批量HTTP处理器
 // checkpoint: 可选，成功后保存检查点
 // retryCount: 失败重试次数，0 表示不重试
 // retryDelay: 重试基础延迟（指数退避）
-func NewBatchHTTPHandler(apiURL string, timeout time.Duration, batchSize int, flushInterval time.Duration, checkpoint CheckpointSaver, retryCount int, retryDelay time.Duration) *BatchHTTPHandler {
+// reportRecorder: 可选，用于统计上报耗时和数量
+func NewBatchHTTPHandler(apiURL string, timeout time.Duration, batchSize int, flushInterval time.Duration, checkpoint CheckpointSaver, retryCount int, retryDelay time.Duration, reportRecorder ReportStatsRecorder) *BatchHTTPHandler {
 	batchURL := strings.TrimSuffix(apiURL, "/") + "/batch"
 	if batchSize <= 0 {
 		batchSize = 100
@@ -240,17 +251,18 @@ func NewBatchHTTPHandler(apiURL string, timeout time.Duration, batchSize int, fl
 		retryDelay = time.Second
 	}
 	h := &BatchHTTPHandler{
-		apiURL:        apiURL,
-		batchURL:      batchURL,
-		client:        NewDefaultHTTPClient(timeout),
-		timeout:       timeout,
-		batchSize:     batchSize,
-		flushInterval: flushInterval,
-		retryCount:    retryCount,
-		retryDelay:    retryDelay,
-		buffer:        make([]filter.MatchResult, 0, batchSize),
-		stopChan:      make(chan struct{}),
-		checkpoint:    checkpoint,
+		apiURL:         apiURL,
+		batchURL:       batchURL,
+		client:         NewDefaultHTTPClient(timeout),
+		timeout:        timeout,
+		batchSize:      batchSize,
+		flushInterval:  flushInterval,
+		retryCount:     retryCount,
+		retryDelay:     retryDelay,
+		buffer:         make([]filter.MatchResult, 0, batchSize),
+		stopChan:       make(chan struct{}),
+		checkpoint:     checkpoint,
+		reportRecorder: reportRecorder,
 	}
 	h.wg.Add(1)
 	go h.flushLoop()
@@ -287,6 +299,8 @@ func (h *BatchHTTPHandler) flushLocked() {
 	}
 	payload := map[string]interface{}{"logs": logs}
 	var err error
+	count := int64(len(batch))
+	start := time.Now()
 	for attempt := 0; attempt <= h.retryCount; attempt++ {
 		if attempt > 0 {
 			delay := h.retryDelay * time.Duration(1<<uint(attempt-1))
@@ -302,10 +316,13 @@ func (h *BatchHTTPHandler) flushLocked() {
 		}
 	}
 	if err != nil {
-		atomic.AddInt64(&h.failed, int64(len(batch)))
+		atomic.AddInt64(&h.failed, count)
 		log.Printf("批量HTTP上报失败（已重试 %d 次）: %v\n", h.retryCount, err)
 	} else {
-		atomic.AddInt64(&h.success, int64(len(batch)))
+		atomic.AddInt64(&h.success, count)
+		if h.reportRecorder != nil {
+			h.reportRecorder.RecordReport(time.Since(start), count)
+		}
 		if h.checkpoint != nil {
 			maxOffsetByFile := make(map[string]int64)
 			for _, m := range batch {
@@ -498,7 +515,8 @@ func (hm *HandlerManager) GetHandler() LogHandler {
 // CreateHandler 根据配置创建处理器
 // handlerConfig: 处理器配置
 // checkpoint: 可选，用于 HTTP 批量模式的断点续传
-func CreateHandler(handlerConfig filter.HandlerConfig, checkpoint CheckpointSaver) (LogHandler, error) {
+// reportRecorder: 可选，用于统计上报耗时和数量
+func CreateHandler(handlerConfig filter.HandlerConfig, checkpoint CheckpointSaver, reportRecorder ReportStatsRecorder) (LogHandler, error) {
 	var timeout time.Duration = 10 * time.Second
 
 	// 解析超时时间
@@ -519,7 +537,7 @@ func CreateHandler(handlerConfig filter.HandlerConfig, checkpoint CheckpointSave
 		if handlerConfig.UDPAddr == "" {
 			return nil, fmt.Errorf("使用UDP处理器时必须在配置文件中配置 udp_addr")
 		}
-		udpHandler, err := NewUDPHandler(handlerConfig.UDPAddr, handlerConfig.UDPSecret)
+		udpHandler, err := NewUDPHandler(handlerConfig.UDPAddr, handlerConfig.UDPSecret, reportRecorder)
 		if err != nil {
 			return nil, fmt.Errorf("创建UDP处理器失败: %w", err)
 		}
@@ -539,7 +557,7 @@ func CreateHandler(handlerConfig filter.HandlerConfig, checkpoint CheckpointSave
 				flushInterval = d
 			}
 		}
-		tcpHandler := NewTCPHandler(handlerConfig.TCPAddr, handlerConfig.TCPSecret, batchSize, flushInterval)
+		tcpHandler := NewTCPHandler(handlerConfig.TCPAddr, handlerConfig.TCPSecret, batchSize, flushInterval, reportRecorder)
 		log.Printf("使用TCP长连接上报处理器，目标: %s，批量: %d，刷新: %v\n", handlerConfig.TCPAddr, batchSize, flushInterval)
 		return tcpHandler, nil
 	case "http":
@@ -570,11 +588,11 @@ func CreateHandler(handlerConfig filter.HandlerConfig, checkpoint CheckpointSave
 				}
 			}
 			log.Printf("使用HTTP批量上报处理器，API: %s/batch，批量: %d，刷新: %v，重试: %d 次\n", handlerConfig.APIURL, batchSize, flushInterval, retryCount)
-			return NewBatchHTTPHandler(handlerConfig.APIURL, timeout, batchSize, flushInterval, checkpoint, retryCount, retryDelay), nil
+			return NewBatchHTTPHandler(handlerConfig.APIURL, timeout, batchSize, flushInterval, checkpoint, retryCount, retryDelay, reportRecorder), nil
 		}
 		// batch_enabled: false 时使用逐条上报
 		log.Printf("使用HTTP上报处理器，API地址: %s，超时时间: %v\n", handlerConfig.APIURL, timeout)
-		return NewHTTPHandler(handlerConfig.APIURL, timeout), nil
+		return NewHTTPHandler(handlerConfig.APIURL, timeout, reportRecorder), nil
 	default:
 		return nil, fmt.Errorf("不支持的处理器类型 '%s'，支持的类型：console, http, udp, tcp", handlerConfig.Type)
 	}

@@ -33,6 +33,7 @@ type TCPHandler struct {
 	wg            sync.WaitGroup
 	success       int64
 	failed        int64
+	reportRecorder ReportStatsRecorder
 }
 
 // NewTCPHandler 创建 TCP 处理器
@@ -40,7 +41,8 @@ type TCPHandler struct {
 // tcpSecret: 可选，与 log-manager tcp.secret 一致时做校验
 // batchSize: 每批条数
 // flushInterval: 批量刷新间隔
-func NewTCPHandler(tcpAddr string, tcpSecret string, batchSize int, flushInterval time.Duration) *TCPHandler {
+// reportRecorder: 可选，用于统计上报耗时和数量
+func NewTCPHandler(tcpAddr string, tcpSecret string, batchSize int, flushInterval time.Duration, reportRecorder ReportStatsRecorder) *TCPHandler {
 	if batchSize <= 0 {
 		batchSize = 50
 	}
@@ -48,12 +50,13 @@ func NewTCPHandler(tcpAddr string, tcpSecret string, batchSize int, flushInterva
 		flushInterval = time.Second
 	}
 	h := &TCPHandler{
-		addr:          tcpAddr,
-		secret:        tcpSecret,
-		batchSize:     batchSize,
-		flushInterval: flushInterval,
-		buffer:        make([]filter.MatchResult, 0, batchSize),
-		stopChan:      make(chan struct{}),
+		addr:           tcpAddr,
+		secret:         tcpSecret,
+		batchSize:      batchSize,
+		flushInterval:  flushInterval,
+		buffer:         make([]filter.MatchResult, 0, batchSize),
+		stopChan:       make(chan struct{}),
+		reportRecorder: reportRecorder,
 	}
 	h.wg.Add(1)
 	go h.flushLoop()
@@ -190,11 +193,16 @@ func (h *TCPHandler) flushLocked() {
 		log.Printf("TCP 序列化失败: %v\n", err)
 		return
 	}
+	count := int64(len(batch))
+	start := time.Now()
 	if err := h.sendFrame(data); err != nil {
-		atomic.AddInt64(&h.failed, int64(len(batch)))
+		atomic.AddInt64(&h.failed, count)
 		log.Printf("TCP 发送失败: %v\n", err)
 	} else {
-		atomic.AddInt64(&h.success, int64(len(batch)))
+		atomic.AddInt64(&h.success, count)
+		if h.reportRecorder != nil {
+			h.reportRecorder.RecordReport(time.Since(start), count)
+		}
 	}
 }
 

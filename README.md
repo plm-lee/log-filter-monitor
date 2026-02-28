@@ -314,8 +314,8 @@ logFilter.Filter(logChan, resultChan, stopChan)
 // 控制台输出
 consoleHandler := handler.NewConsoleHandler()
 
-// HTTP上报
-httpHandler := handler.NewHTTPHandler(apiURL, timeout)
+// HTTP上报（reportRecorder 为 nil 时不统计上报耗时）
+httpHandler := handler.NewHTTPHandler(apiURL, timeout, nil)
 
 // 组合使用
 multiHandler := handler.NewMultiHandler(consoleHandler, httpHandler)

@@ -20,13 +20,14 @@ import (
 // App 应用管理器
 // 负责管理整个应用的初始化、启动和关闭
 type App struct {
-	cfg            *filter.Config
-	checkpoint     *checkpoint.Store
-	configFetcher  *configpull.Fetcher
-	multiMonitor   *monitor.MultiMonitor
-	filterManager  *filter.FilterManager
-	handlerManager *handler.HandlerManager
-	metricsManager *metrics.MetricsManager
+	cfg                 *filter.Config
+	checkpoint          *checkpoint.Store
+	configFetcher       *configpull.Fetcher
+	multiMonitor        *monitor.MultiMonitor
+	filterManager       *filter.FilterManager
+	handlerManager      *handler.HandlerManager
+	metricsManager      *metrics.MetricsManager
+	reportStatsCollector *handler.ReportStatsCollector
 
 	stopChan   chan struct{}
 	resultChan chan filter.MatchResult
@@ -162,7 +163,15 @@ func (a *App) initHandler() error {
 			cp = a.checkpoint
 		}
 	}
-	logHandler, err := handler.CreateHandler(a.cfg.Handler, cp)
+	// 上报统计收集器：统计每分钟平均上报接口耗时、累计上报数量
+	reportInterval := time.Minute
+	if a.cfg.Metrics.Interval != "" {
+		if d, err := time.ParseDuration(a.cfg.Metrics.Interval); err == nil && d > 0 {
+			reportInterval = d
+		}
+	}
+	a.reportStatsCollector = handler.NewReportStatsCollector(reportInterval)
+	logHandler, err := handler.CreateHandler(a.cfg.Handler, cp, a.reportStatsCollector)
 	if err != nil {
 		return err
 	}
@@ -193,6 +202,10 @@ func (a *App) Start() {
 	// 启动指标统计
 	if a.metricsManager != nil {
 		a.metricsManager.Start(metrics.LogOutputFunc)
+	}
+	// 启动上报统计（每分钟输出上报耗时和数量）
+	if a.reportStatsCollector != nil {
+		a.reportStatsCollector.Start()
 	}
 
 	// 启动日志过滤
@@ -230,6 +243,9 @@ func (a *App) Stop() {
 	a.handlerManager.Wait()
 	if a.metricsManager != nil {
 		a.metricsManager.Stop()
+	}
+	if a.reportStatsCollector != nil {
+		a.reportStatsCollector.Stop()
 	}
 
 	// 输出最终统计信息

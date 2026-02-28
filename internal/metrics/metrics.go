@@ -471,7 +471,12 @@ func (mm *MetricsManager) Start(outputFunc func(Metrics)) {
 	if mm.collector != nil {
 		// 创建组合输出函数：同时输出到控制台/日志和HTTP接口（如果配置了）
 		combinedOutputFunc := func(metrics Metrics) {
-			// 先输出到控制台/日志
+			// 指标统计为 0 时不输出日志、不上报
+			if metrics.TotalCount == 0 {
+				return
+			}
+
+			// 输出到控制台/日志
 			if outputFunc != nil {
 				outputFunc(metrics)
 			}

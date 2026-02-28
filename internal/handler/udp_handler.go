@@ -15,17 +15,19 @@ const maxUDPPayloadSize = 1400 // 留出 IP+UDP 头空间，避免分片
 // UDPHandler UDP 上报处理器
 // 将匹配的日志通过 UDP 单包发送，fire-and-forget，可接受少量丢包
 type UDPHandler struct {
-	conn    *net.UDPConn
-	addr    *net.UDPAddr
-	secret  string
-	success int64
-	failed  int64
+	conn           *net.UDPConn
+	addr           *net.UDPAddr
+	secret         string
+	success        int64
+	failed         int64
+	reportRecorder ReportStatsRecorder
 }
 
 // NewUDPHandler 创建 UDP 处理器
 // udpAddr: 目标地址，格式 host:port
 // udpSecret: 可选，与 log-manager udp.secret 一致时做校验
-func NewUDPHandler(udpAddr string, udpSecret string) (*UDPHandler, error) {
+// reportRecorder: 可选，用于统计上报耗时和数量
+func NewUDPHandler(udpAddr string, udpSecret string, reportRecorder ReportStatsRecorder) (*UDPHandler, error) {
 	addr, err := net.ResolveUDPAddr("udp", udpAddr)
 	if err != nil {
 		return nil, err
@@ -35,9 +37,10 @@ func NewUDPHandler(udpAddr string, udpSecret string) (*UDPHandler, error) {
 		return nil, err
 	}
 	return &UDPHandler{
-		conn:   conn,
-		addr:   addr,
-		secret: udpSecret,
+		conn:           conn,
+		addr:           addr,
+		secret:         udpSecret,
+		reportRecorder: reportRecorder,
 	}, nil
 }
 
@@ -79,6 +82,7 @@ func (h *UDPHandler) Handle(matchResult filter.MatchResult) error {
 			log.Printf("UDP 日志过长已截断，原始 %d 字节\n", len(logLine))
 		}
 	}
+	start := time.Now()
 	_, err = h.conn.Write(data)
 	if err != nil {
 		atomic.AddInt64(&h.failed, 1)
@@ -86,6 +90,9 @@ func (h *UDPHandler) Handle(matchResult filter.MatchResult) error {
 		return err
 	}
 	atomic.AddInt64(&h.success, 1)
+	if h.reportRecorder != nil {
+		h.reportRecorder.RecordReport(time.Since(start), 1)
+	}
 	return nil
 }
 
