@@ -18,10 +18,10 @@ var lenBufPool = sync.Pool{
 }
 
 // TCPHandler TCP 长连接上报处理器
-// 维持持久连接，按长度前缀帧发送 JSON 日志，支持单条或批量
 type TCPHandler struct {
 	addr          string
 	secret        string
+	host          string
 	batchSize     int
 	flushInterval time.Duration
 	conn          net.Conn
@@ -37,12 +37,7 @@ type TCPHandler struct {
 }
 
 // NewTCPHandler 创建 TCP 处理器
-// tcpAddr: 目标地址，格式 host:port
-// tcpSecret: 可选，与 log-manager tcp.secret 一致时做校验
-// batchSize: 每批条数
-// flushInterval: 批量刷新间隔
-// reportRecorder: 可选，用于统计上报耗时和数量
-func NewTCPHandler(tcpAddr string, tcpSecret string, batchSize int, flushInterval time.Duration, reportRecorder ReportStatsRecorder) *TCPHandler {
+func NewTCPHandler(tcpAddr string, tcpSecret string, host string, batchSize int, flushInterval time.Duration, reportRecorder ReportStatsRecorder) *TCPHandler {
 	if batchSize <= 0 {
 		batchSize = 50
 	}
@@ -52,6 +47,7 @@ func NewTCPHandler(tcpAddr string, tcpSecret string, batchSize int, flushInterva
 	h := &TCPHandler{
 		addr:           tcpAddr,
 		secret:         tcpSecret,
+		host:           host,
 		batchSize:      batchSize,
 		flushInterval:  flushInterval,
 		buffer:         make([]filter.MatchResult, 0, batchSize),
@@ -168,6 +164,9 @@ func (h *TCPHandler) tcpLogItem(m filter.MatchResult) map[string]interface{} {
 	}
 	if m.Tag != "" {
 		item["tag"] = m.Tag
+	}
+	if h.host != "" {
+		item["host"] = h.host
 	}
 	if h.secret != "" {
 		item["secret"] = h.secret

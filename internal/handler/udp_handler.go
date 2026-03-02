@@ -13,21 +13,18 @@ import (
 const maxUDPPayloadSize = 1400 // 留出 IP+UDP 头空间，避免分片
 
 // UDPHandler UDP 上报处理器
-// 将匹配的日志通过 UDP 单包发送，fire-and-forget，可接受少量丢包
 type UDPHandler struct {
 	conn           *net.UDPConn
 	addr           *net.UDPAddr
 	secret         string
+	host           string
 	success        int64
 	failed         int64
 	reportRecorder ReportStatsRecorder
 }
 
 // NewUDPHandler 创建 UDP 处理器
-// udpAddr: 目标地址，格式 host:port
-// udpSecret: 可选，与 log-manager udp.secret 一致时做校验
-// reportRecorder: 可选，用于统计上报耗时和数量
-func NewUDPHandler(udpAddr string, udpSecret string, reportRecorder ReportStatsRecorder) (*UDPHandler, error) {
+func NewUDPHandler(udpAddr string, udpSecret string, host string, reportRecorder ReportStatsRecorder) (*UDPHandler, error) {
 	addr, err := net.ResolveUDPAddr("udp", udpAddr)
 	if err != nil {
 		return nil, err
@@ -40,6 +37,7 @@ func NewUDPHandler(udpAddr string, udpSecret string, reportRecorder ReportStatsR
 		conn:           conn,
 		addr:           addr,
 		secret:         udpSecret,
+		host:           host,
 		reportRecorder: reportRecorder,
 	}, nil
 }
@@ -56,6 +54,9 @@ func (h *UDPHandler) matchResultToPayload(m filter.MatchResult) map[string]inter
 	}
 	if m.Tag != "" {
 		payload["tag"] = m.Tag
+	}
+	if h.host != "" {
+		payload["host"] = h.host
 	}
 	if h.secret != "" {
 		payload["secret"] = h.secret

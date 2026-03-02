@@ -81,6 +81,7 @@ type HandlerConfig struct {
 	TCPSecret       string `yaml:"tcp_secret"`        // TCP 认证密钥（可选，与 log-manager tcp.secret 一致时做校验）
 	TCPBatchSize    int    `yaml:"tcp_batch_size"`    // TCP 批量条数（可选，默认：50）
 	TCPFlushInterval string `yaml:"tcp_flush_interval"` // TCP 批量刷新间隔（可选，默认：1s）
+	Host            string `yaml:"host"`              // 服务器名称，为空时使用 os.Hostname()
 }
 
 // MetricsConfig 指标统计配置结构体
